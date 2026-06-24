@@ -210,6 +210,37 @@ impl VaultContract {
         Ok(())
     }
 
+    /// Admin: enable or disable staking whitelist. When enabled, only whitelisted addresses may call stake/stake_for.
+    pub fn set_whitelist_enabled(env: Env, enabled: bool) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        env.storage().instance().set(&DataKey::WhitelistEnabled, &enabled);
+        Ok(())
+    }
+
+    /// Admin: add address to whitelist
+    pub fn add_to_whitelist(env: Env, user: Address) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        env.storage()
+            .persistent()
+            .set(&DataKey::Whitelisted(user), &true);
+        Ok(())
+    }
+
+    /// Admin: remove address from whitelist
+    pub fn remove_from_whitelist(env: Env, user: Address) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        env.storage().persistent().remove(&DataKey::Whitelisted(user));
+        Ok(())
+    }
+
+    /// Read-only: check whether a user is whitelisted
+    pub fn is_whitelisted(env: Env, user: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::Whitelisted(user))
+            .unwrap_or(false)
+    }
+
     /// Admin: set the maximum withdrawal limit per transaction (in shares).
     pub fn set_withdrawal_limit(env: Env, limit: i128) -> Result<(), VaultError> {
         admin::require_admin(&env)?;
@@ -483,6 +514,23 @@ impl VaultContract {
             _ => return Err(VaultError::NotADelegate),
         }
 
+        // If whitelist is enabled, ensure beneficiary is whitelisted for new stakes
+        let whitelist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::WhitelistEnabled)
+            .unwrap_or(false);
+        if whitelist_enabled {
+            let allowed = env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&DataKey::Whitelisted(beneficiary.clone()))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(VaultError::NotWhitelisted);
+            }
+        }
+
         let token_addr: Address = env
             .storage()
             .instance()
@@ -625,6 +673,23 @@ impl VaultContract {
     fn do_stake(env: &Env, staker: &Address, amount: i128) -> Result<i128, VaultError> {
         staker.require_auth();
         Self::require_not_paused(env)?;
+
+        // If whitelist is enabled, reject non-whitelisted stakers. Existing stakers can still unstake/claim.
+        let whitelist_enabled: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::WhitelistEnabled)
+            .unwrap_or(false);
+        if whitelist_enabled {
+            let allowed = env
+                .storage()
+                .persistent()
+                .get::<_, bool>(&DataKey::Whitelisted(staker.clone()))
+                .unwrap_or(false);
+            if !allowed {
+                return Err(VaultError::NotWhitelisted);
+            }
+        }
 
         if amount <= 0 {
             return Err(VaultError::ZeroAmount);

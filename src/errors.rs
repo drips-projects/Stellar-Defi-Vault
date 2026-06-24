@@ -22,4 +22,6 @@ pub enum VaultError {
     PoolCapReached = 16,
     /// No active position found for a given user when expected.
     PositionNotFound = 17,
+    /// Caller or beneficiary is not whitelisted while whitelist is enabled.
+    NotWhitelisted = 18,
 }

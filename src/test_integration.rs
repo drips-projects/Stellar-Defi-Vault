@@ -223,6 +223,117 @@ fn test_integration_full_lifecycle() {
     );
 }
 
+// ── Whitelist tests for permissioned staking ─────────────────────────────────
+
+#[test]
+fn test_whitelisted_user_can_stake_when_enabled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| { li.min_persistent_entry_ttl = 1_000_000; li.max_entry_ttl = 1_000_000; });
+
+    let admin = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let (token_addr, _token, token_admin) = create_token(&env, &admin);
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    vault.initialize(&admin, &token_addr);
+
+    // enable whitelist and add alice
+    vault.set_whitelist_enabled(&admin, &true);
+    vault.add_to_whitelist(&admin, &alice);
+
+    token_admin.mint(&alice, &100_000);
+    let res = vault.try_stake(&alice, &50_000);
+    assert!(res.is_ok(), "Whitelisted user should be able to stake when whitelist enabled");
+}
+
+#[test]
+fn test_non_whitelisted_user_rejected_when_enabled() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| { li.min_persistent_entry_ttl = 1_000_000; li.max_entry_ttl = 1_000_000; });
+
+    let admin = Address::generate(&env);
+    let bob = Address::generate(&env);
+    let (token_addr, _token, token_admin) = create_token(&env, &admin);
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    vault.initialize(&admin, &token_addr);
+
+    // enable whitelist but do NOT add bob
+    vault.set_whitelist_enabled(&admin, &true);
+
+    token_admin.mint(&bob, &100_000);
+    let res = vault.try_stake(&bob, &20_000);
+    assert_eq!(res, Err(Ok(crate::errors::VaultError::NotWhitelisted)));
+}
+
+#[test]
+fn test_toggle_off_allows_non_whitelisted() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| { li.min_persistent_entry_ttl = 1_000_000; li.max_entry_ttl = 1_000_000; });
+
+    let admin = Address::generate(&env);
+    let carol = Address::generate(&env);
+    let (token_addr, _token, token_admin) = create_token(&env, &admin);
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    vault.initialize(&admin, &token_addr);
+
+    // enable whitelist, but then turn it off
+    vault.set_whitelist_enabled(&admin, &true);
+    vault.set_whitelist_enabled(&admin, &false);
+
+    token_admin.mint(&carol, &100_000);
+    // should succeed when whitelist disabled
+    let res = vault.try_stake(&carol, &30_000);
+    assert!(res.is_ok());
+}
+
+#[test]
+fn test_revocation_blocks_new_stake_but_allows_unstake_and_claim() {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.ledger().with_mut(|li| { li.sequence_number = 0; li.min_persistent_entry_ttl = 1_000_000; li.max_entry_ttl = 1_000_000; });
+
+    let admin = Address::generate(&env);
+    let alice = Address::generate(&env);
+    let (token_addr, token, token_admin) = create_token(&env, &admin);
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    vault.initialize(&admin, &token_addr);
+
+    // enable whitelist and add alice
+    vault.set_whitelist_enabled(&admin, &true);
+    vault.add_to_whitelist(&admin, &alice);
+
+    token_admin.mint(&alice, &200_000);
+    // alice stakes 100k
+    vault.stake(&alice, &100_000);
+
+    // advance ledger and set a reward rate so claim will return >0
+    env.ledger().with_mut(|li| li.sequence_number = 500);
+    vault.set_reward_rate_bps(&1000);
+
+    // revoke alice
+    vault.remove_from_whitelist(&admin, &alice);
+
+    // alice should NOT be able to stake more
+    let try_more = vault.try_stake(&alice, &10_000);
+    assert_eq!(try_more, Err(Ok(crate::errors::VaultError::NotWhitelisted)));
+
+    // but alice should still be able to claim accrued rewards
+    let claim_res = vault.claim(&alice);
+    // claim should succeed (may be zero or >0 depending on timing), but must not error
+    // ensure method returns without Err by comparing types — here it's direct call so will panic on Err
+    // We assert that the returned value is >= 0
+    assert!(claim_res >= 0);
+
+    // and unstake should work
+    let unstake_res = vault.unstake(&alice, &100_000);
+    assert_eq!(unstake_res, 100_000);
+}
 // ── pool_stats reflects staker count correctly ────────────────────────────────
 
 #[test]

@@ -26,6 +26,9 @@ pub enum DataKey {
     Delegate(Address),
     // Address that receives slashed tokens. Defaults to admin when not set.
     SlashTreasury,
+    // Whitelist flag and per-user whitelist mapping for permissioned pools
+    WhitelistEnabled,
+    Whitelisted(Address),
     PoolCap,
 }
 
