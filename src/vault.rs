@@ -101,6 +101,14 @@ impl VaultContract {
         String::from_str(&env, CONTRACT_VERSION)
     }
 
+    /// Read-only query for the token address that users must deposit to stake.
+    pub fn get_stake_token(env: Env) -> Result<Address, VaultError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(VaultError::NotInitialized)
+    }
+
     /// Returns true when the pool is paused, false otherwise.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
@@ -128,6 +136,11 @@ impl VaultContract {
     pub fn total_staked(env: Env) -> Result<i128, VaultError> {
         let _ = admin::get_admin(&env)?;
         Ok(balance::get_total_shares(&env))
+    }
+
+    /// Read-only query for the total rewards paid out since deployment.
+    pub fn total_rewards_paid(env: Env) -> i128 {
+        balance::get_total_rewards_paid(&env)
     }
 
     /// Pool-wide governance vote weight.
@@ -929,6 +942,120 @@ impl VaultContract {
         events::slash(&env, &admin_actual, &user, actual);
 
         Ok(actual)
+    }
+
+    // --- Simulation functions (Issue #54) ---
+
+    /// Simulate the reward for staking `amount` tokens for `ledgers` ledger sequences
+    /// at the current reward rate and boost multiplier. This is a read-only estimate
+    /// and does not modify any state.
+    pub fn simulate_stake(env: Env, amount: i128, ledgers: u32) -> Result<i128, VaultError> {
+        let _ = admin::get_admin(&env)?;
+        let rate_bps = balance::get_reward_rate_bps(&env);
+        if rate_bps == 0 {
+            return Ok(0);
+        }
+        let multiplier = BOOST_BPS_BASE;
+        Self::reward_for_ledgers(amount, rate_bps, multiplier, ledgers)
+    }
+
+    /// Simulate compounded rewards by claiming every `claim_interval` ledgers
+    /// and restaking the reward. Returns the total compounded reward after `ledgers`
+    /// ledger sequences. This is a read-only estimate — compounding intervals vary
+    /// in practice.
+    pub fn simulate_compound(
+        env: Env,
+        amount: i128,
+        ledgers: u32,
+        claim_interval: u32,
+    ) -> Result<i128, VaultError> {
+        let _ = admin::get_admin(&env)?;
+        let rate_bps = balance::get_reward_rate_bps(&env);
+        if rate_bps == 0 || claim_interval == 0 {
+            return Ok(0);
+        }
+
+        let multiplier = BOOST_BPS_BASE;
+        let mut total_reward: i128 = 0;
+        let mut remaining = ledgers;
+        let mut current_amount = amount;
+
+        while remaining > 0 {
+            let interval = if remaining < claim_interval {
+                remaining
+            } else {
+                claim_interval
+            };
+            let reward =
+                Self::reward_for_ledgers(current_amount, rate_bps, multiplier, interval)?;
+            total_reward = total_reward
+                .checked_add(reward)
+                .ok_or(VaultError::ArithmeticError)?;
+            current_amount = current_amount
+                .checked_add(reward)
+                .ok_or(VaultError::ArithmeticError)?;
+            remaining -= interval;
+        }
+
+        Ok(total_reward)
+    }
+
+    /// Simulate the difference in rewards with and without the current boost schedule.
+    /// Returns `(base_reward, boosted_reward)` for staking `amount` tokens for `ledgers`
+    /// ledger sequences. This is a read-only estimate.
+    pub fn simulate_boost_impact(
+        env: Env,
+        amount: i128,
+        ledgers: u32,
+    ) -> Result<(i128, i128), VaultError> {
+        let _ = admin::get_admin(&env)?;
+        let rate_bps = balance::get_reward_rate_bps(&env);
+        if rate_bps == 0 {
+            return Ok((0, 0));
+        }
+
+        let base_reward = Self::reward_for_ledgers(amount, rate_bps, BOOST_BPS_BASE, ledgers)?;
+
+        let schedule = balance::get_boost_schedule(&env).unwrap_or(Vec::new(&env));
+        let mut boosted_reward: i128 = 0;
+        let mut cursor: u32 = 0;
+        let mut current_multiplier = BOOST_BPS_BASE;
+        let mut index = 0;
+
+        while index < schedule.len() {
+            let (tier_ledger, tier_multiplier) = schedule.get(index).unwrap();
+            if tier_ledger <= cursor {
+                current_multiplier = tier_multiplier;
+                index += 1;
+                continue;
+            }
+            if tier_ledger >= ledgers {
+                break;
+            }
+            let segment = tier_ledger - cursor;
+            let segment_reward =
+                Self::reward_for_ledgers(amount, rate_bps, current_multiplier, segment)?;
+            boosted_reward = boosted_reward
+                .checked_add(segment_reward)
+                .ok_or(VaultError::ArithmeticError)?;
+            cursor = tier_ledger;
+            current_multiplier = tier_multiplier;
+            index += 1;
+        }
+
+        if cursor < ledgers {
+            let segment_reward = Self::reward_for_ledgers(
+                amount,
+                rate_bps,
+                current_multiplier,
+                ledgers - cursor,
+            )?;
+            boosted_reward = boosted_reward
+                .checked_add(segment_reward)
+                .ok_or(VaultError::ArithmeticError)?;
+        }
+
+        Ok((base_reward, boosted_reward))
     }
 
     // --- Internal helpers ---

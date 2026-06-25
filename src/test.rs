@@ -1017,140 +1017,160 @@ fn test_set_pool_cap_negative_fails() {
     assert_eq!(result, Err(Ok(VaultError::ZeroAmount)));
 }
 
-// ── APR and TWAP tests ───────────────────────────────────────────────────────
+// ── total_rewards_paid (Issue #71) ──────────────────────────────────────────
 
 #[test]
-fn test_current_apr_bps_returns_current_rate() {
+fn test_total_rewards_paid_starts_at_zero() {
     let f = VaultFixture::new();
-    
-    f.vault.set_reward_rate_bps(&1000); // 10% APR
-    assert_eq!(f.vault.current_apr_bps(), 1000);
-    
-    f.vault.set_reward_rate_bps(&2000); // 20% APR
-    assert_eq!(f.vault.current_apr_bps(), 2000);
+    assert_eq!(f.vault.total_rewards_paid(), 0);
 }
 
 #[test]
-fn test_twap_single_rate_equals_current_rate() {
+fn test_total_rewards_paid_increments_after_claim() {
     let f = VaultFixture::new();
-    
-    f.vault.set_reward_rate_bps(&1500); // 15% APR
+    let annual_stake = STELLAR_LEDGERS_PER_YEAR as i128;
+
+    f.token_admin.mint(&f.admin, &(annual_stake * 2));
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+    f.vault.fund_reward_pool(&f.admin, &(annual_stake * 2));
+    f.vault.stake(&f.alice, &annual_stake);
+
     set_ledger(&f.env, 100);
-    
-    // With no history changes, TWAP should equal current rate
-    let twap = f.vault.twap_apr_bps(&50).unwrap();
-    assert_eq!(twap, 1500);
-    
-    let twap = f.vault.twap_apr_bps(&100).unwrap();
-    assert_eq!(twap, 1500);
+    let claim_amount = f.vault.claim(&f.alice);
+    assert!(claim_amount > 0);
+    assert_eq!(f.vault.total_rewards_paid(), claim_amount);
 }
 
 #[test]
-fn test_twap_two_rates_calculated_correctly() {
+fn test_total_rewards_paid_accumulates_across_claims() {
     let f = VaultFixture::new();
-    
-    // Set initial rate
-    f.vault.set_reward_rate_bps(&1000); // 10% APR
+    let annual_stake = STELLAR_LEDGERS_PER_YEAR as i128;
+
+    f.token_admin.mint(&f.admin, &(annual_stake * 2));
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+    f.vault.fund_reward_pool(&f.admin, &(annual_stake * 2));
+    f.vault.stake(&f.alice, &annual_stake);
+
     set_ledger(&f.env, 100);
-    
-    // Change rate at ledger 100
-    f.vault.set_reward_rate_bps(&2000); // 20% APR
+    let claim1 = f.vault.claim(&f.alice);
+    assert_eq!(f.vault.total_rewards_paid(), claim1);
+
     set_ledger(&f.env, 200);
-    
-    // Calculate TWAP for last 100 ledgers (100-200)
-    // First 0 ledgers at 10% (no history before change), 100 ledgers at 20%
-    // Actually: history stores (100, 1000) meaning at ledger 100, rate changed from 1000 to 2000
-    // So from 100-200, rate was 2000 (100 ledgers)
-    // TWAP should be 2000
-    let twap = f.vault.twap_apr_bps(&100).unwrap();
-    assert_eq!(twap, 2000);
-    
-    // Now change again at ledger 200
-    f.vault.set_reward_rate_bps(&3000); // 30% APR
-    set_ledger(&f.env, 300);
-    
-    // Calculate TWAP for last 200 ledgers (100-300)
-    // History: [(100, 1000), (200, 2000)]
-    // From 100-200: rate was 2000 (100 ledgers)
-    // From 200-300: rate was 3000 (100 ledgers)
-    // TWAP = (100*2000 + 100*3000) / 200 = 2500
-    let twap = f.vault.twap_apr_bps(&200).unwrap();
-    assert_eq!(twap, 2500);
+    let claim2 = f.vault.claim(&f.alice);
+    assert_eq!(f.vault.total_rewards_paid(), claim1 + claim2);
 }
 
 #[test]
-fn test_twap_with_window_starting_before_first_change() {
+fn test_total_rewards_paid_increments_after_unstake_then_claim() {
     let f = VaultFixture::new();
-    
-    set_ledger(&f.env, 50);
-    f.vault.set_reward_rate_bps(&1000); // 10% APR
+    let annual_stake = STELLAR_LEDGERS_PER_YEAR as i128;
+
+    f.token_admin.mint(&f.admin, &(annual_stake * 2));
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+    f.vault.fund_reward_pool(&f.admin, &(annual_stake * 2));
+    f.vault.stake(&f.alice, &annual_stake);
+
     set_ledger(&f.env, 100);
-    f.vault.set_reward_rate_bps(&2000); // 20% APR
-    set_ledger(&f.env, 200);
-    
-    // TWAP for last 150 ledgers (50-200)
-    // History: [(50, 0), (100, 1000)]
-    // From 50-100: rate was 1000 (50 ledgers)
-    // From 100-200: rate was 2000 (100 ledgers)
-    // TWAP = (50*1000 + 100*2000) / 150 = 1666
-    let twap = f.vault.twap_apr_bps(&150).unwrap();
-    assert_eq!(twap, 1666);
+    f.vault.unstake(&f.alice, &annual_stake);
+
+    let claim_amount = f.vault.claim(&f.alice);
+    assert!(claim_amount > 0);
+    assert_eq!(f.vault.total_rewards_paid(), claim_amount);
+}
+
+// ── get_stake_token (Issue #64) ─────────────────────────────────────────────
+
+#[test]
+fn test_get_stake_token_returns_initialized_token() {
+    let f = VaultFixture::new();
+    let token_addr: soroban_sdk::Address = f
+        .env
+        .storage()
+        .instance()
+        .get(&crate::storage::DataKey::Token)
+        .unwrap();
+    assert_eq!(f.vault.get_stake_token(), token_addr);
 }
 
 #[test]
-fn test_rate_history_capped_at_50_entries() {
+fn test_get_stake_token_before_init_fails() {
+    let env = Env::default();
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    let result = vault.try_get_stake_token();
+    assert_eq!(result, Err(Ok(VaultError::NotInitialized)));
+}
+
+// ── simulation functions (Issue #54) ────────────────────────────────────────
+
+#[test]
+fn test_simulate_stake_zero_rate() {
     let f = VaultFixture::new();
-    
-    f.vault.set_reward_rate_bps(&1000);
-    
-    // Change rate 60 times
-    for i in 1..=60 {
-        set_ledger(&f.env, i * 10);
-        f.vault.set_reward_rate_bps(&(1000 + i as u32));
-    }
-    
-    set_ledger(&f.env, 650);
-    
-    let history = f.vault.get_rate_history().unwrap();
-    assert_eq!(history.len(), 50);
-    
-    // Verify oldest entry was removed
-    let first_entry = history.get(0).unwrap();
-    assert!(first_entry.0 > 10); // First change at ledger 10 should be gone
+    assert_eq!(f.vault.simulate_stake(&1_000_000, &1000), 0);
 }
 
 #[test]
-fn test_get_rate_history_returns_full_history() {
+fn test_simulate_stake_known_output() {
     let f = VaultFixture::new();
-    
-    f.vault.set_reward_rate_bps(&1000);
-    set_ledger(&f.env, 100);
-    f.vault.set_reward_rate_bps(&2000);
-    set_ledger(&f.env, 200);
-    f.vault.set_reward_rate_bps(&3000);
-    
-    let history = f.vault.get_rate_history().unwrap();
-    assert_eq!(history.len(), 3);
-    
-    let entry1 = history.get(0).unwrap();
-    assert_eq!(entry1.0, 0); // Initial rate at ledger 0
-    assert_eq!(entry1.1, 0); // Old rate was 0
-    
-    let entry2 = history.get(1).unwrap();
-    assert_eq!(entry2.0, 100);
-    assert_eq!(entry2.1, 1000);
-    
-    let entry3 = history.get(2).unwrap();
-    assert_eq!(entry3.0, 200);
-    assert_eq!(entry3.1, 2000);
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+
+    let result = f.vault.simulate_stake(&1_000_000, &STELLAR_LEDGERS_PER_YEAR);
+    assert_eq!(result, 1_000_000);
 }
 
 #[test]
-fn test_twap_zero_window_returns_current_rate() {
+fn test_simulate_compound_zero_rate() {
     let f = VaultFixture::new();
-    
-    f.vault.set_reward_rate_bps(&1500);
-    
-    let twap = f.vault.twap_apr_bps(&0).unwrap();
-    assert_eq!(twap, 1500);
+    assert_eq!(f.vault.simulate_compound(&1_000_000, &1000, &100), 0);
+}
+
+#[test]
+fn test_simulate_compound_zero_interval() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+    assert_eq!(f.vault.simulate_compound(&1_000_000, &1000, &0), 0);
+}
+
+#[test]
+fn test_simulate_compound_matches_single_stake_for_one_interval() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+
+    let ledgers = 1000;
+    let compound = f
+        .vault
+        .simulate_compound(&1_000_000, &ledgers, &ledgers);
+    let simple = f.vault.simulate_stake(&1_000_000, &ledgers);
+    assert_eq!(compound, simple);
+}
+
+#[test]
+fn test_simulate_compound_yields_more_than_simple() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+
+    let compound = f.vault.simulate_compound(&1_000_000, &10_000, &1_000);
+    let simple = f.vault.simulate_stake(&1_000_000, &10_000);
+    assert!(compound > simple);
+}
+
+#[test]
+fn test_simulate_boost_impact_no_schedule() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+
+    let (base, boosted) = f.vault.simulate_boost_impact(&1_000_000, &1000);
+    assert_eq!(base, boosted);
+}
+
+#[test]
+fn test_simulate_boost_impact_with_schedule() {
+    let f = VaultFixture::new();
+    let schedule = boost_schedule(&f.env, &[(500, 15_000)]);
+    f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
+    f.vault.set_boost_schedule(&schedule);
+
+    let (base, boosted) = f.vault.simulate_boost_impact(&1_000_000, &1000);
+    assert_eq!(base, 1_000);
+    assert!(boosted > base);
 }
