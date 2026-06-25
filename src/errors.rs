@@ -21,25 +21,26 @@ pub enum VaultError {
     NotADelegate = 15,
     CannotRescueStakeToken = 16,
     CannotRescueRewardToken = 17,
-    PoolCapReached = 16,
     /// No active position found for a given user when expected.
-    PositionNotFound = 17,
+    PositionNotFound = 18,
     /// Caller or beneficiary is not whitelisted while whitelist is enabled.
-    NotWhitelisted = 18,
+    NotWhitelisted = 19,
     /// Unstake must use request_unstake / execute_unstake flow when cooldown is enabled.
-    UseCooldownFlow = 19,
+    UseCooldownFlow = 20,
     /// Unstake fee exceeds the maximum allowed (500 bps / 5%).
-    UnstakeFeeTooHigh = 20,
+    UnstakeFeeTooHigh = 21,
     /// batch_position_query was called with more than 20 addresses.
-    BatchTooLarge = 21,
+    BatchTooLarge = 22,
     /// get_total_claimable was called when more than 200 stakers are registered.
-    TooManyStakers = 22,
+    TooManyStakers = 23,
     /// Recipient already has an active staking position.
-    RecipientAlreadyStaking = 23,
+    RecipientAlreadyStaking = 24,
     /// A boost campaign is already active; end it before starting a new one.
-    CampaignAlreadyActive = 24,
+    CampaignAlreadyActive = 25,
     /// No boost campaign is currently active.
-    NoCampaignActive = 25,
+    NoCampaignActive = 26,
     /// Leaderboard size exceeds the maximum of 20.
-    LeaderboardSizeTooLarge = 26,
+    LeaderboardSizeTooLarge = 27,
+    /// view_all_positions page_size exceeds the maximum of 20.
+    PageSizeTooLarge = 28,
 }
