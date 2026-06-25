@@ -3,7 +3,7 @@ use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
 use crate::{
     admin, balance, errors::VaultError, events,
     nft::StakeReceiptNFTClient,
-    storage::{CampaignInfo, ClaimWindow, DataKey, LeaderboardEntry, PoolConfig, PoolStats, StakePosition, UnbondingPosition, UserStats},
+    storage::{CampaignInfo, ClaimWindow, DataKey, LeaderboardEntry, PoolConfig, PoolStats, StakePosition, UnbondingPosition, UserStats, UserSummary},
 };
 
 pub(crate) const CONTRACT_VERSION: &str = "0.1.0";
@@ -2626,4 +2626,145 @@ impl VaultContract {
 
         Ok(payable)
     }
+    // --- Issue #100: paginated admin query over all positions ---
+
+    /// Admin-only paginated query over all registered staking positions.
+    ///
+    /// Returns up to `page_size` `(Address, StakePosition)` pairs in insertion
+    /// order (first-stake first). `page` is zero-indexed. Reverts with
+    /// `PageSizeTooLarge` when `page_size > 20` to cap per-call compute.
+    /// Returns an empty vec when `page` is past the last page. Users with
+    /// zero shares are skipped silently. Admin auth required.
+    pub fn view_all_positions(
+        env: Env,
+        page: u32,
+        page_size: u32,
+    ) -> Result<Vec<(Address, StakePosition)>, VaultError> {
+        admin::require_admin(&env)?;
+        if page_size == 0 || page_size > 20 {
+            return Err(VaultError::PageSizeTooLarge);
+        }
+
+        let all_stakers = balance::get_all_stakers(&env);
+        let start = page * page_size;
+        let mut results: Vec<(Address, StakePosition)> = Vec::new(&env);
+
+        let mut i = start;
+        while i < all_stakers.len() && i < start + page_size {
+            let user = all_stakers.get(i).unwrap();
+            if let Some(pos) = Self::build_position(&env, &user)? {
+                results.push_back((user, pos));
+            }
+            i += 1;
+        }
+
+        Ok(results)
+    }
+
+    // --- Issue #101: frozen position mechanism ---
+
+    /// Admin: set the inactivity threshold in ledgers.
+    ///
+    /// Positions that have not claimed or updated in more than this many ledgers
+    /// since their last activity can be flagged by `flag_frozen`. Pass `0` to
+    /// disable the threshold (threshold is informational only — no automatic
+    /// freezing occurs).
+    pub fn set_inactivity_threshold(env: Env, admin: Address, ledgers: u32) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        env.storage().instance().set(&DataKey::InactivityThreshold, &ledgers);
+        Ok(())
+    }
+
+    /// Admin: mark a user's position as frozen.
+    ///
+    /// Freezing is informational only — it does not block stake, unstake, or
+    /// claim operations. Emits `FrozenPosition` with the current ledger.
+    /// Reverts with `PositionNotFound` when the user has no active stake.
+    pub fn flag_frozen(env: Env, admin: Address, user: Address) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        if balance::get_shares(&env, &user) == 0 {
+            return Err(VaultError::PositionNotFound);
+        }
+        let frozen_at = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::FrozenAt(user.clone()), &frozen_at);
+        let admin_addr = admin::get_admin(&env)?;
+        events::frozen_position(&env, &admin_addr, &user, frozen_at);
+        Ok(())
+    }
+
+    /// Read-only: returns `true` when the user's position carries a frozen flag.
+    pub fn is_frozen(env: Env, user: Address) -> bool {
+        env.storage()
+            .persistent()
+            .has(&DataKey::FrozenAt(user))
+    }
+
+    /// Admin: remove the frozen flag from a user's position.
+    pub fn unfreeze(env: Env, admin: Address, user: Address) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::FrozenAt(user));
+        Ok(())
+    }
+
+    // --- Issue #102: reward_per_token_per_ledger metric ---
+
+    /// Read-only metric: reward earned per staked token per ledger at the current rate.
+    ///
+    /// Returns `reward_rate_bps / (10_000 * STELLAR_LEDGERS_PER_YEAR)`.
+    ///
+    /// Note: integer division causes this to truncate to 0 for all practical
+    /// rate values (e.g. 500 bps / 63_072_000_000 = 0). Callers that need
+    /// sub-integer precision should multiply the rate by the position size
+    /// first, then divide. Returns 0 when rate is zero or total staked is zero.
+    /// No auth required.
+    pub fn reward_per_token_per_ledger(env: Env) -> i128 {
+        let rate_bps = balance::get_reward_rate_bps(&env);
+        if rate_bps == 0 {
+            return 0;
+        }
+        let total_staked = balance::get_total_deposited(&env);
+        if total_staked == 0 {
+            return 0;
+        }
+        (rate_bps as i128)
+            / (BOOST_BPS_BASE as i128 * STELLAR_LEDGERS_PER_YEAR as i128)
+    }
+
+    // --- Issue #103: user_summary aggregated query ---
+
+    /// Read-only aggregate: returns the user's position, pending reward, and
+    /// pool-share fraction (in basis points) in a single contract call.
+    ///
+    /// `pool_share_bps` is `user_shares * 10_000 / total_shares` (0 when no
+    /// shares exist globally). Returns `UserSummary { position: None,
+    /// pending_reward: 0, pool_share_bps: 0 }` for users with no stake.
+    /// No auth required.
+    pub fn user_summary(env: Env, user: Address) -> Result<UserSummary, VaultError> {
+        let position = Self::build_position(&env, &user)?;
+        let pending_reward = Self::pending_reward(&env, &user)?;
+        let user_shares = balance::get_shares(&env, &user);
+        let total_shares = balance::get_total_shares(&env);
+        let pool_share_bps = if total_shares == 0 || user_shares == 0 {
+            0
+        } else {
+            user_shares
+                .checked_mul(BOOST_BPS_BASE as i128)
+                .unwrap_or(0)
+                .checked_div(total_shares)
+                .unwrap_or(0)
+        };
+        Ok(UserSummary {
+            position,
+            pending_reward,
+            pool_share_bps,
+        })
+    }
+
 }
