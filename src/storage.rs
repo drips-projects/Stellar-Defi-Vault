@@ -77,6 +77,14 @@ pub enum DataKey {
     // Task 2: Vesting
     VestingPeriod,
     VestingEntries(Address),
+    // Task 3: Epoch Mode
+    EpochMode,
+    CurrentEpoch,
+    EpochLedgers,
+    EpochRewardPerEpoch,
+    EpochRewardFactor(u32),
+    UserEpochSnapshot(Address, u32),
+    UserLastClaimedEpoch(Address),
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -317,4 +325,13 @@ pub struct StakeStreak {
 pub struct VestingEntry {
     pub amount: i128,
     pub claimable_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EpochState {
+    pub epoch_number: u32,
+    pub started_at: u32,
+    pub reward_pool: i128,
+    pub total_staked_snapshot: i128,
 }

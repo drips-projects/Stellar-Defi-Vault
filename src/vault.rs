@@ -764,6 +764,14 @@ impl VaultContract {
     /// Admin: set the base reward APR in basis points.
     pub fn set_reward_rate_bps(env: Env, rate_bps: u32) -> Result<(), VaultError> {
         admin::require_admin(&env)?;
+        let is_epoch_mode = env
+            .storage()
+            .instance()
+            .get(&DataKey::EpochMode)
+            .unwrap_or(false);
+        if is_epoch_mode && rate_bps > 0 {
+            return Err(VaultError::EpochModeConflict);
+        }
         Self::validate_rate_bps(rate_bps)?; // Issue #72
         let old_rate = balance::get_reward_rate_bps(&env);
         
@@ -2299,6 +2307,15 @@ impl VaultContract {
 
     fn accrue_rewards(env: &Env, user: &Address, current_shares: i128) -> Result<(), VaultError> {
         let current_ledger = env.ledger().sequence();
+        let is_epoch_mode = env
+            .storage()
+            .instance()
+            .get(&DataKey::EpochMode)
+            .unwrap_or(false);
+        if is_epoch_mode {
+            balance::set_reward_checkpoint_ledger(env, user, current_ledger);
+            return Ok(());
+        }
         let checkpoint = balance::get_reward_checkpoint_ledger(env, user).unwrap_or(current_ledger);
         let additional_reward =
             Self::reward_between_ledgers(env, user, current_shares, checkpoint, current_ledger, true)?;
@@ -2722,6 +2739,14 @@ impl VaultContract {
     /// emits the `claimed` event. Does NOT call `require_auth` — callers are
     /// responsible for gating access.
     fn do_claim(env: &Env, staker: &Address) -> Result<i128, VaultError> {
+        let is_epoch_mode = env
+            .storage()
+            .instance()
+            .get(&DataKey::EpochMode)
+            .unwrap_or(false);
+        if is_epoch_mode {
+            return Err(VaultError::EpochModeConflict);
+        }
         let current_shares = balance::get_shares(env, staker);
         Self::accrue_rewards(env, staker, current_shares)?;
 
@@ -3154,6 +3179,232 @@ impl VaultContract {
         Ok(matured_total)
     }
 
+    pub fn set_epoch_mode(
+        env: Env,
+        admin: Address,
+        epoch_ledgers: u32,
+        reward_per_epoch: i128,
+    ) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        if balance::get_reward_rate_bps(&env) > 0 {
+            return Err(VaultError::EpochModeConflict);
+        }
+
+        env.storage().instance().set(&DataKey::EpochMode, &true);
+        env.storage().instance().set(&DataKey::EpochLedgers, &epoch_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::EpochRewardPerEpoch, &reward_per_epoch);
+
+        if !env.storage().instance().has(&DataKey::CurrentEpoch) {
+            let initial_state = EpochState {
+                epoch_number: 1,
+                started_at: env.ledger().sequence(),
+                reward_pool: reward_per_epoch,
+                total_staked_snapshot: 0,
+            };
+            env.storage()
+                .instance()
+                .set(&DataKey::CurrentEpoch, &initial_state);
+        }
+
+        Ok(())
+    }
+
+    pub fn finalize_epoch(env: Env, admin: Address) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+
+        let is_epoch_mode = env
+            .storage()
+            .instance()
+            .get(&DataKey::EpochMode)
+            .unwrap_or(false);
+        if !is_epoch_mode {
+            return Err(VaultError::EpochModeConflict);
+        }
+
+        let mut state: EpochState = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentEpoch)
+            .ok_or(VaultError::NotInitialized)?;
+
+        let epoch_ledgers = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::EpochLedgers)
+            .unwrap_or(0);
+        let current_ledger = env.ledger().sequence();
+        if current_ledger < state.started_at.saturating_add(epoch_ledgers) {
+            return Err(VaultError::EpochNotFinalized);
+        }
+
+        let total_staked_snapshot = balance::get_total_deposited(&env);
+        state.total_staked_snapshot = total_staked_snapshot;
+
+        let reward_factor = if total_staked_snapshot > 0 {
+            state
+                .reward_pool
+                .checked_mul(1_000_000_000_000i128)
+                .ok_or(VaultError::ArithmeticError)?
+                .checked_div(total_staked_snapshot)
+                .ok_or(VaultError::ArithmeticError)?
+        } else {
+            0
+        };
+
+        env.storage()
+            .persistent()
+            .set(&DataKey::EpochRewardFactor(state.epoch_number), &reward_factor);
+
+        let all_stakers = balance::get_all_stakers(&env);
+        let total_shares = balance::get_total_shares(&env);
+        let total_deposited = balance::get_total_deposited(&env);
+        let mut i = 0u32;
+        while i < all_stakers.len() {
+            let staker = all_stakers.get(i).unwrap();
+            let shares = balance::get_shares(&env, &staker);
+            if shares > 0 && total_shares > 0 {
+                let staker_staked = balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
+                env.storage().persistent().set(
+                    &DataKey::UserEpochSnapshot(staker, state.epoch_number),
+                    &staker_staked,
+                );
+            }
+            i += 1;
+        }
+
+        let reward_per_epoch = env
+            .storage()
+            .instance()
+            .get::<_, i128>(&DataKey::EpochRewardPerEpoch)
+            .unwrap_or(0);
+
+        let next_state = EpochState {
+            epoch_number: state.epoch_number + 1,
+            started_at: current_ledger,
+            reward_pool: reward_per_epoch,
+            total_staked_snapshot: 0,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::CurrentEpoch, &next_state);
+
+        Ok(())
+    }
+
+    pub fn epoch_reward(env: Env, user: Address, epoch_number: u32) -> i128 {
+        let reward_factor: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::EpochRewardFactor(epoch_number))
+            .unwrap_or(0);
+        if reward_factor == 0 {
+            return 0;
+        }
+        let user_staked: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::UserEpochSnapshot(user, epoch_number))
+            .unwrap_or(0);
+
+        user_staked
+            .checked_mul(reward_factor)
+            .unwrap_or(0)
+            .checked_div(1_000_000_000_000i128)
+            .unwrap_or(0)
+    }
+
+    pub fn claim_epoch_rewards(env: Env, user: Address) -> Result<i128, VaultError> {
+        user.require_auth();
+        let current_epoch_state: EpochState = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentEpoch)
+            .ok_or(VaultError::NotInitialized)?;
+
+        let last_claimed = env
+            .storage()
+            .persistent()
+            .get::<_, u32>(&DataKey::UserLastClaimedEpoch(user.clone()))
+            .unwrap_or(0);
+
+        let mut total_accumulated: i128 = 0;
+        let mut current_epoch_to_claim = last_claimed + 1;
+
+        while current_epoch_to_claim < current_epoch_state.epoch_number {
+            let reward = Self::epoch_reward(env.clone(), user.clone(), current_epoch_to_claim);
+            total_accumulated = total_accumulated
+                .checked_add(reward)
+                .ok_or(VaultError::ArithmeticError)?;
+            current_epoch_to_claim += 1;
+        }
+
+        if total_accumulated == 0 {
+            return Ok(0);
+        }
+
+        let reward_pool = balance::get_reward_pool_balance(&env);
+        if reward_pool < total_accumulated {
+            return Err(VaultError::InsufficientRewardPool);
+        }
+
+        let vesting_period: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VestingPeriod)
+            .unwrap_or(0);
+
+        if vesting_period > 0 {
+            let mut entries: Vec<VestingEntry> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VestingEntries(user.clone()))
+                .unwrap_or_else(|| Vec::new(&env));
+            if entries.len() >= 10 {
+                return Err(VaultError::VestingQueueFull);
+            }
+            let claimable_at_ledger = env.ledger().sequence().saturating_add(vesting_period);
+            entries.push_back(VestingEntry {
+                amount: total_accumulated,
+                claimable_at_ledger,
+            });
+            env.storage()
+                .persistent()
+                .set(&DataKey::VestingEntries(user.clone()), &entries);
+        } else {
+            let token_addr: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::Token)
+                .ok_or(VaultError::NotInitialized)?;
+
+            let token_client = token::Client::new(&env, &token_addr);
+            token_client.transfer(&env.current_contract_address(), &user, &total_accumulated);
+        }
+
+        balance::set_reward_pool_balance(&env, reward_pool - total_accumulated);
+        let paid = balance::get_total_rewards_paid(&env);
+        balance::set_total_rewards_paid(&env, paid + total_accumulated);
+
+        env.storage().persistent().set(
+            &DataKey::UserLastClaimedEpoch(user.clone()),
+            &(current_epoch_state.epoch_number - 1),
+        );
+
+        events::claimed(&env, &user, total_accumulated);
+        Ok(total_accumulated)
+    }
+
+    pub fn current_epoch(env: Env) -> Result<EpochState, VaultError> {
+        env.storage()
+            .instance()
+            .get(&DataKey::CurrentEpoch)
+            .ok_or(VaultError::NotInitialized)
+    }
+
     // ── Issue #104: interface detection ──────────────────────────────────────
 
     /// The compile-time set of interfaces this deployment supports.
@@ -3166,6 +3417,7 @@ impl VaultContract {
         InterfaceId::Lockup,
         InterfaceId::Whitelist,
         InterfaceId::VestingSchedule,
+        InterfaceId::EpochMode,
     ];
 
     /// Returns `true` if this contract deployment supports the given interface.
