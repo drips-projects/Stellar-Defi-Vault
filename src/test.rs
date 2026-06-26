@@ -10,9 +10,10 @@ use soroban_sdk::{
 use crate::{
     errors::VaultError,
     nft::{StakeReceiptNFT, StakeReceiptNFTClient},
-    storage::{LeaderboardEntry, UnstakeCheckResult},
+    storage::{UnstakeCheckResult},
     vault::{
-        VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_VERSION,
+        VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_DESCRIPTION, CONTRACT_NAME,
+        CONTRACT_VERSION,
         STELLAR_LEDGERS_PER_YEAR,
     },
 };
@@ -76,11 +77,7 @@ impl<'a> VaultFixture<'a> {
         Self::build(true, Some(stake_decimals), Some(reward_decimals))
     }
 
-    fn build(
-        mock_auths: bool,
-        stake_decimals: Option<u32>,
-        reward_decimals: Option<u32>,
-    ) -> Self {
+    fn build(mock_auths: bool, stake_decimals: Option<u32>, reward_decimals: Option<u32>) -> Self {
         let env = Env::default();
         env.mock_all_auths();
         env.ledger().with_mut(|li| {
@@ -98,7 +95,13 @@ impl<'a> VaultFixture<'a> {
         let vault_id = env.register_contract(None, VaultContract);
         let vault = VaultContractClient::new(&env, &vault_id);
 
-        vault.initialize(&admin, &token_addr, &0_u32, &stake_decimals, &reward_decimals);
+        vault.initialize(
+            &admin,
+            &token_addr,
+            &0_u32,
+            &stake_decimals,
+            &reward_decimals,
+        );
 
         // Mint starting balances
         token_admin.mint(&alice, &20_000_000);
@@ -136,7 +139,9 @@ fn test_double_initialize_fails() {
     let token_addr: soroban_sdk::Address = f
         .env
         .register_stellar_asset_contract(Address::generate(&f.env));
-    let result = f.vault.try_initialize(&f.admin, &token_addr, &0_u32, &None, &None);
+    let result = f
+        .vault
+        .try_initialize(&f.admin, &token_addr, &0_u32, &None, &None);
     assert_eq!(result, Err(Ok(VaultError::AlreadyInitialized)));
 }
 
@@ -149,7 +154,20 @@ fn test_get_admin_returns_initialized_admin() {
 #[test]
 fn test_get_version_returns_contract_version() {
     let f = VaultFixture::new();
-    assert_eq!(f.vault.get_version(), soroban_sdk::String::from_str(&f.env, CONTRACT_VERSION));
+    assert_eq!(
+        f.vault.get_version(),
+        soroban_sdk::String::from_str(&f.env, CONTRACT_VERSION)
+    );
+}
+
+#[test]
+fn test_contract_metadata_returns_constants() {
+    let f = VaultFixture::new();
+    let metadata = f.vault.contract_metadata();
+
+    assert_eq!(metadata.name, soroban_sdk::String::from_str(&f.env, CONTRACT_NAME));
+    assert_eq!(metadata.version, soroban_sdk::String::from_str(&f.env, CONTRACT_VERSION));
+    assert_eq!(metadata.description, soroban_sdk::String::from_str(&f.env, CONTRACT_DESCRIPTION));
 }
 
 // ── deposit ───────────────────────────────────────────────────────────────────
@@ -959,7 +977,8 @@ fn test_rescue_third_token_succeeds() {
     assert_eq!(third_token.balance(&f.alice), 0);
 
     // Admin rescues those tokens
-    f.vault.rescue_token(&f.admin, &third_token_addr, &5_000, &f.alice);
+    f.vault
+        .rescue_token(&f.admin, &third_token_addr, &5_000, &f.alice);
 
     assert_eq!(third_token.balance(&vault_id), 0);
     assert_eq!(third_token.balance(&f.alice), 5_000);
@@ -973,7 +992,9 @@ fn test_rescue_stake_token_fails() {
     // Alice stakes so the vault holds some stake tokens
     f.vault.stake(&f.alice, &100_000);
 
-    let result = f.vault.try_rescue_token(&f.admin, &stake_token_addr, &100_000, &f.bob);
+    let result = f
+        .vault
+        .try_rescue_token(&f.admin, &stake_token_addr, &100_000, &f.bob);
     assert_eq!(result, Err(Ok(VaultError::CannotRescueStakeToken)));
 }
 
@@ -990,7 +1011,9 @@ fn test_rescue_reward_token_fails() {
     let vault_id = f.vault.address.clone();
     reward_token_admin.mint(&vault_id, &1_000);
 
-    let result = f.vault.try_rescue_token(&f.admin, &reward_token_addr, &1_000, &f.bob);
+    let result = f
+        .vault
+        .try_rescue_token(&f.admin, &reward_token_addr, &1_000, &f.bob);
     assert_eq!(result, Err(Ok(VaultError::CannotRescueRewardToken)));
 }
 
@@ -1002,7 +1025,8 @@ fn test_rescue_token_requires_admin_auth() {
     let vault_id = f.vault.address.clone();
     third_token_admin.mint(&vault_id, &1_000);
 
-    f.vault.rescue_token(&f.admin, &third_token_addr, &1_000, &f.alice);
+    f.vault
+        .rescue_token(&f.admin, &third_token_addr, &1_000, &f.alice);
     // Verify admin auth was required (first recorded auth is the admin's)
     assert_eq!(f.env.auths()[0].0, f.admin);
 }
@@ -1015,7 +1039,8 @@ fn test_rescue_token_emits_token_rescued_event() {
     let vault_id = f.vault.address.clone();
     third_token_admin.mint(&vault_id, &2_000);
 
-    f.vault.rescue_token(&f.admin, &third_token_addr, &2_000, &f.alice);
+    f.vault
+        .rescue_token(&f.admin, &third_token_addr, &2_000, &f.alice);
 
     let events = f.env.events().all();
     let rescue_events: std::vec::Vec<_> = events
@@ -1127,7 +1152,7 @@ fn test_restake_debug_set_window_then_stake_ledger() {
 #[test]
 fn test_restake_debug_lock_period_only() {
     let f = VaultFixture::new();
-    f.vault.set_lock_period(&100);  // only this
+    f.vault.set_lock_period(&100); // only this
     f.vault.stake(&f.alice, &500_000);
     set_ledger(&f.env, 100);
     let ret = f.vault.unstake(&f.alice, &500_000);
@@ -1211,7 +1236,10 @@ fn test_restake_within_window_is_penalty_free() {
     // Normally 10% penalty; Restaked flag exempts her.
     set_ledger(&f.env, 200);
     let returned = f.vault.unstake(&f.alice, &500_000);
-    assert_eq!(returned, 500_000, "Restaked user should receive full amount, no penalty");
+    assert_eq!(
+        returned, 500_000,
+        "Restaked user should receive full amount, no penalty"
+    );
 }
 
 #[test]
@@ -1237,7 +1265,11 @@ fn test_restake_outside_window_incurs_normal_penalty() {
     set_ledger(&f.env, 200);
     let returned = f.vault.unstake(&f.alice, &500_000);
     let penalty = 500_000_i128 * 1000 / 10_000;
-    assert_eq!(returned, 500_000 - penalty, "Outside window: normal penalty applies");
+    assert_eq!(
+        returned,
+        500_000 - penalty,
+        "Outside window: normal penalty applies"
+    );
 }
 
 #[test]
@@ -1263,7 +1295,11 @@ fn test_restake_window_zero_disables_feature() {
     set_ledger(&f.env, 150);
     let returned = f.vault.unstake(&f.alice, &500_000);
     let penalty = 500_000_i128 * 1000 / 10_000;
-    assert_eq!(returned, 500_000 - penalty, "Window=0: normal penalty must apply");
+    assert_eq!(
+        returned,
+        500_000 - penalty,
+        "Window=0: normal penalty must apply"
+    );
 }
 
 // ── Issue #42: admin action audit log ────────────────────────────────────────
@@ -1275,7 +1311,11 @@ fn test_admin_action_count_increments() {
     let before = f.vault.get_admin_action_count();
     f.vault.set_reward_rate_bps(&500);
     let after = f.vault.get_admin_action_count();
-    assert_eq!(after, before + 1, "Count should increment after each admin action");
+    assert_eq!(
+        after,
+        before + 1,
+        "Count should increment after each admin action"
+    );
 
     f.vault.pause();
     assert_eq!(f.vault.get_admin_action_count(), before + 2);
@@ -1307,7 +1347,10 @@ fn test_admin_action_pause_emits_audit_event() {
         .into_iter()
         .filter(|(_, topics, _)| topic_matches(&f.env, topics, "adm_act"))
         .collect();
-    assert!(!audit_events.is_empty(), "adm_act event should be emitted on pause");
+    assert!(
+        !audit_events.is_empty(),
+        "adm_act event should be emitted on pause"
+    );
 }
 
 #[test]
@@ -1320,7 +1363,10 @@ fn test_admin_action_transfer_admin_emits_audit_event() {
         .into_iter()
         .filter(|(_, topics, _)| topic_matches(&f.env, topics, "adm_act"))
         .collect();
-    assert!(!audit_events.is_empty(), "adm_act event should be emitted on transfer_admin");
+    assert!(
+        !audit_events.is_empty(),
+        "adm_act event should be emitted on transfer_admin"
+    );
 }
 
 #[test]
@@ -1477,6 +1523,55 @@ fn test_cap_disabled_allows_unlimited_staking() {
 }
 
 #[test]
+fn test_max_positions_staking_within_limit_succeeds() {
+    let f = VaultFixture::new();
+    f.vault.set_max_positions_per_user(&f.admin, &1);
+
+    let shares = f.vault.stake(&f.alice, &100_000);
+    assert_eq!(shares, 100_000);
+}
+
+#[test]
+fn test_max_positions_exceeding_limit_fails() {
+    let f = VaultFixture::new();
+    f.vault.set_max_positions_per_user(&f.admin, &1);
+
+    f.vault.stake(&f.alice, &100_000);
+    let result = f.vault.try_stake(&f.alice, &10_000);
+    assert_eq!(result, Err(Ok(VaultError::MaxPositionsReached)));
+}
+
+#[test]
+fn test_max_positions_zero_disables_limit() {
+    let f = VaultFixture::new();
+    f.vault.set_max_positions_per_user(&f.admin, &0);
+    assert_eq!(f.vault.get_max_positions_per_user(), 0);
+
+    f.vault.stake(&f.alice, &100_000);
+    let result = f.vault.try_stake(&f.alice, &10_000);
+    assert!(result.is_ok());
+}
+
+#[test]
+fn test_set_max_positions_above_ten_rejected() {
+    let f = VaultFixture::new();
+    let result = f.vault.try_set_max_positions_per_user(&f.admin, &11);
+    assert_eq!(result, Err(Ok(VaultError::MaxPositionsTooHigh)));
+}
+
+#[test]
+fn test_admin_can_lower_max_positions_without_affecting_existing_positions() {
+    let f = VaultFixture::new();
+    f.vault.set_max_positions_per_user(&f.admin, &10);
+    f.vault.stake(&f.alice, &100_000);
+
+    f.vault.set_max_positions_per_user(&f.admin, &1);
+    assert_eq!(f.vault.get_max_positions_per_user(), 1);
+    assert_eq!(f.vault.shares_of(&f.alice), 100_000);
+    assert!(f.vault.position_of(&f.alice).is_some());
+}
+
+#[test]
 fn test_admin_can_raise_and_lower_cap() {
     let f = VaultFixture::new();
     f.vault.set_pool_cap(&500_000);
@@ -1604,7 +1699,10 @@ fn test_unstake_all_fully_exits_position() {
     let alice_balance_before = f.token.balance(&f.alice);
     let returned = f.vault.unstake_all(&f.alice);
     assert_eq!(returned, stake_amount);
-    assert_eq!(f.token.balance(&f.alice), alice_balance_before + stake_amount);
+    assert_eq!(
+        f.token.balance(&f.alice),
+        alice_balance_before + stake_amount
+    );
 }
 
 #[test]
@@ -1685,6 +1783,28 @@ fn test_position_age_no_position_reverts() {
     assert_eq!(result, Err(Ok(VaultError::PositionNotFound)));
 }
 
+#[test]
+fn test_time_since_last_claim_zero_immediately_after_stake() {
+    let f = VaultFixture::new();
+    f.vault.stake(&f.alice, &1_000_000_i128);
+
+    let t = f.vault.time_since_last_claim(&f.alice);
+    assert_eq!(t, 0);
+}
+
+#[test]
+fn test_time_since_last_claim_equals_ledgers_advanced() {
+    let f = VaultFixture::new();
+    f.vault.stake(&f.alice, &1_000_000_i128);
+
+    let advance = 500_u32;
+    let staked_at = f.env.ledger().sequence();
+    set_ledger(&f.env, staked_at + advance);
+
+    let t = f.vault.time_since_last_claim(&f.alice);
+    assert_eq!(t, advance);
+}
+
 // ── rate_changed event (#82) ──────────────────────────────────────────────────
 
 #[test]
@@ -1727,7 +1847,11 @@ fn test_rate_changed_event_emitted_even_when_rate_unchanged() {
         .filter(|(_, topics, _)| topic_matches(&f.env, topics, "rate_chg"))
         .collect();
 
-    assert_eq!(rate_events_after.len(), 1, "event must fire even when rate does not change");
+    assert_eq!(
+        rate_events_after.len(),
+        1,
+        "event must fire even when rate does not change"
+    );
 }
 
 // ── total_rewards_paid (Issue #71) ──────────────────────────────────────────
@@ -1824,7 +1948,9 @@ fn test_simulate_stake_known_output() {
     let f = VaultFixture::new();
     f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
 
-    let result = f.vault.simulate_stake(&1_000_000, &STELLAR_LEDGERS_PER_YEAR);
+    let result = f
+        .vault
+        .simulate_stake(&1_000_000, &STELLAR_LEDGERS_PER_YEAR);
     assert_eq!(result, 1_000_000);
 }
 
@@ -1847,9 +1973,7 @@ fn test_simulate_compound_matches_single_stake_for_one_interval() {
     f.vault.set_reward_rate_bps(&BOOST_BPS_BASE);
 
     let ledgers = 1000;
-    let compound = f
-        .vault
-        .simulate_compound(&1_000_000, &ledgers, &ledgers);
+    let compound = f.vault.simulate_compound(&1_000_000, &ledgers, &ledgers);
     let simple = f.vault.simulate_stake(&1_000_000, &ledgers);
     assert_eq!(compound, simple);
 }
@@ -1862,9 +1986,14 @@ fn test_simulate_compound_yields_more_than_simple() {
     // Use a full year with quarterly compounding so the compounding effect
     // is large enough to exceed simple interest despite integer truncation.
     let annual = STELLAR_LEDGERS_PER_YEAR;
-    let compound = f.vault.simulate_compound(&1_000_000, &annual, &(annual / 4));
+    let compound = f
+        .vault
+        .simulate_compound(&1_000_000, &annual, &(annual / 4));
     let simple = f.vault.simulate_stake(&1_000_000, &annual);
-    assert!(compound > simple, "quarterly compound ({compound}) must beat simple ({simple})");
+    assert!(
+        compound > simple,
+        "quarterly compound ({compound}) must beat simple ({simple})"
+    );
 }
 
 #[test]
@@ -1886,7 +2015,10 @@ fn test_simulate_boost_impact_with_schedule() {
     let (base, boosted) = f.vault.simulate_boost_impact(&1_000_000, &1000);
     // base = 1_000_000 * 10_000 * 1000 / 10_000 / 6_307_200 = 158 (integer division)
     assert_eq!(base, 158);
-    assert!(boosted > base, "15_000 multiplier must yield more than base 10_000");
+    assert!(
+        boosted > base,
+        "15_000 multiplier must yield more than base 10_000"
+    );
 }
 
 // ── get_pool_config (#76) ─────────────────────────────────────────────────────
@@ -2080,10 +2212,16 @@ fn test_cap_zero_disables_limit() {
     set_ledger(&f.env, STELLAR_LEDGERS_PER_YEAR);
 
     let claimed = f.vault.claim(&f.alice);
-    assert!(claimed > 0, "unlimited claim (cap=0) must return full reward");
+    assert!(
+        claimed > 0,
+        "unlimited claim (cap=0) must return full reward"
+    );
 
     let window_opt = f.vault.get_claim_window(&f.alice);
-    assert!(window_opt.is_none(), "no window stored when cap is disabled");
+    assert!(
+        window_opt.is_none(),
+        "no window stored when cap is disabled"
+    );
 }
 
 // ── APR and TWAP tests ────────────────────────────────────────────────────────
@@ -2159,7 +2297,7 @@ fn test_rate_history_capped_at_50_entries() {
     f.vault.set_reward_rate_bps(&1000);
     for i in 1..=60 {
         set_ledger(&f.env, i * 10);
-        f.vault.set_reward_rate_bps(&(1000 + i as u32));
+        f.vault.set_reward_rate_bps(&(1000 + i));
     }
     set_ledger(&f.env, 650);
 
@@ -2212,27 +2350,39 @@ fn test_twap_zero_window_returns_current_rate() {
 fn test_can_unstake_ok_when_valid() {
     let f = VaultFixture::new();
     f.vault.stake(&f.alice, &100_000);
-    assert_eq!(f.vault.can_unstake(&f.alice, &100_000), UnstakeCheckResult::Ok);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &100_000),
+        UnstakeCheckResult::Ok
+    );
 }
 
 #[test]
 fn test_can_unstake_no_position() {
     let f = VaultFixture::new();
-    assert_eq!(f.vault.can_unstake(&f.alice, &100_000), UnstakeCheckResult::NoPosition);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &100_000),
+        UnstakeCheckResult::NoPosition
+    );
 }
 
 #[test]
 fn test_can_unstake_insufficient_amount_zero() {
     let f = VaultFixture::new();
     f.vault.stake(&f.alice, &100_000);
-    assert_eq!(f.vault.can_unstake(&f.alice, &0), UnstakeCheckResult::InsufficientAmount);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &0),
+        UnstakeCheckResult::InsufficientAmount
+    );
 }
 
 #[test]
 fn test_can_unstake_insufficient_amount_too_much() {
     let f = VaultFixture::new();
     f.vault.stake(&f.alice, &100_000);
-    assert_eq!(f.vault.can_unstake(&f.alice, &200_000), UnstakeCheckResult::InsufficientAmount);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &200_000),
+        UnstakeCheckResult::InsufficientAmount
+    );
 }
 
 #[test]
@@ -2240,7 +2390,10 @@ fn test_can_unstake_pool_paused() {
     let f = VaultFixture::new();
     f.vault.stake(&f.alice, &100_000);
     f.vault.pause();
-    assert_eq!(f.vault.can_unstake(&f.alice, &100_000), UnstakeCheckResult::PoolPaused);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &100_000),
+        UnstakeCheckResult::PoolPaused
+    );
 }
 
 #[test]
@@ -2249,7 +2402,10 @@ fn test_can_unstake_still_locked() {
     f.vault.set_lock_period(&100);
     f.vault.stake(&f.alice, &100_000);
     set_ledger(&f.env, 50);
-    assert_eq!(f.vault.can_unstake(&f.alice, &100_000), UnstakeCheckResult::StillLocked);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &100_000),
+        UnstakeCheckResult::StillLocked
+    );
 }
 
 #[test]
@@ -2258,7 +2414,10 @@ fn test_can_unstake_not_locked_after_period() {
     f.vault.set_lock_period(&100);
     f.vault.stake(&f.alice, &100_000);
     set_ledger(&f.env, 100);
-    assert_eq!(f.vault.can_unstake(&f.alice, &100_000), UnstakeCheckResult::Ok);
+    assert_eq!(
+        f.vault.can_unstake(&f.alice, &100_000),
+        UnstakeCheckResult::Ok
+    );
 }
 
 // ── Issue #97: set_pool_description ─────────────────────────────────────────

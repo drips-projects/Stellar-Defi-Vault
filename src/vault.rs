@@ -1,12 +1,12 @@
-use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Vec};
+use soroban_sdk::{contract, contractimpl, token, Address, Env, String, Symbol, Vec};
 
 use crate::{
     admin, balance, errors::VaultError, events,
     nft::StakeReceiptNFTClient,
     storage::{
-        CampaignInfo, ClaimWindow, DataKey, InterfaceId, LeaderboardEntry, OptionalPosition,
-        PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition, StakeStreak,
-        UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
+        CampaignInfo, ClaimWindow, ContractMetadata, DataKey, InterfaceId, LeaderboardEntry,
+        OptionalPosition, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
+        StakeStreak, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
     },
 };
 
@@ -14,6 +14,8 @@ use crate::{
 pub(crate) const MAX_STAKE_HISTORY: u32 = 5;
 
 pub(crate) const CONTRACT_VERSION: &str = "0.1.0";
+pub(crate) const CONTRACT_NAME: &str = "stellar-staking-pool";
+pub(crate) const CONTRACT_DESCRIPTION: &str = "A staking pool contract for Stellar DeFi vault positions.";
 pub(crate) const BOOST_BPS_BASE: u32 = 10_000;
 pub(crate) const MAX_BOOST_TIERS: u32 = 5;
 pub(crate) const MAX_HISTORY_SNAPSHOTS: u32 = 100;
@@ -167,6 +169,15 @@ impl VaultContract {
     /// Read-only query for the deployed contract version.
     pub fn get_version(env: Env) -> String {
         String::from_str(&env, CONTRACT_VERSION)
+    }
+
+    /// Read-only metadata for external tools and explorers.
+    pub fn contract_metadata(env: Env) -> ContractMetadata {
+        ContractMetadata {
+            name: String::from_str(&env, CONTRACT_NAME),
+            version: String::from_str(&env, CONTRACT_VERSION),
+            description: String::from_str(&env, CONTRACT_DESCRIPTION),
+        }
     }
 
     /// Read-only query for the token address that users must deposit to stake.
@@ -509,7 +520,7 @@ impl VaultContract {
 
         // store or merge unbonding position; restart cooldown from now
         let current_ledger = env.ledger().sequence();
-        let mut existing: UnbondingPosition = env
+        let existing: UnbondingPosition = env
             .storage()
             .persistent()
             .get(&DataKey::UnbondingPosition(user.clone()))
@@ -795,11 +806,7 @@ impl VaultContract {
         }
 
         let current_ledger = env.ledger().sequence();
-        let start_ledger = if current_ledger > window_ledgers {
-            current_ledger - window_ledgers
-        } else {
-            0
-        };
+        let start_ledger = current_ledger.saturating_sub(window_ledgers);
 
         let history = balance::get_rate_history(&env);
         let current_rate = balance::get_reward_rate_bps(&env);
@@ -812,7 +819,7 @@ impl VaultContract {
         // Build timeline: history stores (ledger, old_rate) meaning at that ledger, rate changed from old_rate to new
         // We need to reconstruct the rate timeline
         let mut weighted_sum: u64 = 0;
-        let mut total_ledgers: u64 = window_ledgers as u64;
+        let total_ledgers: u64 = window_ledgers as u64;
         
         // Each history entry (L, old_rate) means "at L, rate changed FROM old_rate".
         // The rate active FROM ledger L is the old_rate of the NEXT entry, or current_rate if last.
@@ -862,12 +869,9 @@ impl VaultContract {
         let final_duration = current_ledger - last_ledger;
         weighted_sum += (final_duration as u64) * (current_rate as u64);
 
-        // Calculate average
-        if total_ledgers == 0 {
-            Ok(current_rate)
-        } else {
-            Ok((weighted_sum / total_ledgers) as u32)
-        }
+        // Calculate average using checked_div to avoid manual zero checks
+        let avg = weighted_sum.checked_div(total_ledgers).unwrap_or(current_rate as u64);
+        Ok(avg as u32)
     }
 
     /// Read-only: returns full rate change history.
@@ -1078,6 +1082,25 @@ impl VaultContract {
             .get(&DataKey::StakedAtLedger(user))
             .unwrap_or(0);
         Ok(env.ledger().sequence().saturating_sub(staked_at))
+    }
+
+    /// Read-only query for how many ledgers have passed since the user's last claim.
+    ///
+    /// Returns `current_ledger - last_claim_ledger` for the user's position,
+    /// which is useful for monitoring tools that want to detect long-unclaimed
+    /// reward accruals. Reverts with `PositionNotFound` if the user has no
+    /// active position. No auth required.
+    pub fn time_since_last_claim(env: Env, user: Address) -> Result<u32, VaultError> {
+        let shares = balance::get_shares(&env, &user);
+        if shares == 0 {
+            return Err(VaultError::PositionNotFound);
+        }
+        let last_claim: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::LastClaimLedger(user))
+            .unwrap_or(0);
+        Ok(env.ledger().sequence().saturating_sub(last_claim))
     }
 
     // --- Pool statistics (#38) ---
@@ -1462,6 +1485,7 @@ impl VaultContract {
             return Ok(u32::MAX);
         }
         // ceil(ledgers * 5 / 86400) — 5 s/ledger, 86400 s/day
+        #[allow(clippy::manual_div_ceil)]
         let days = ((ledgers as u64) * 5 + 86399) / 86400;
         Ok(days.min(u32::MAX as u64) as u32)
     }
@@ -1639,7 +1663,7 @@ impl VaultContract {
                 .instance()
                 .get(&DataKey::Leaderboard)
                 .unwrap_or(Vec::new(&env));
-            if board.len() as u32 > n {
+            if board.len() > n {
                 let mut trimmed: Vec<LeaderboardEntry> = Vec::new(&env);
                 let mut i = 0u32;
                 while i < n {
@@ -1650,6 +1674,28 @@ impl VaultContract {
             }
         }
         Ok(())
+    }
+
+    /// Admin: set max active positions allowed per user (0 disables limit, max 10).
+    pub fn set_max_positions_per_user(
+        env: Env,
+        admin: Address,
+        max: u32,
+    ) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        if max > 10 {
+            return Err(VaultError::MaxPositionsTooHigh);
+        }
+        let key = Symbol::new(&env, "mxpos");
+        env.storage().instance().set(&key, &max);
+        Ok(())
+    }
+
+    /// Read-only: current max active positions allowed per user.
+    pub fn get_max_positions_per_user(env: Env) -> u32 {
+        let key = Symbol::new(&env, "mxpos");
+        env.storage().instance().get(&key).unwrap_or(0)
     }
 
     /// Read-only: returns the current top stakers sorted descending by position size.
@@ -1928,6 +1974,18 @@ impl VaultContract {
         let total_deposited = balance::get_total_deposited(env);
         let current_shares = balance::get_shares(env, staker);
 
+        let max_positions: u32 = env
+            .storage()
+            .instance()
+            .get(&Symbol::new(env, "mxpos"))
+            .unwrap_or(0);
+        if max_positions > 0 {
+            let current_positions = if current_shares > 0 { 1 } else { 0 };
+            if current_positions >= max_positions {
+                return Err(VaultError::MaxPositionsReached);
+            }
+        }
+
         Self::require_min_stake(env, current_shares, total_shares, total_deposited, amount)?;
         Self::accrue_rewards(env, staker, current_shares)?;
 
@@ -2175,7 +2233,7 @@ impl VaultContract {
         let current_ledger = env.ledger().sequence();
         let mut history = balance::get_stake_history(env, user).unwrap_or(Vec::new(env));
 
-        if history.len() > 0 {
+        if !history.is_empty() {
             let last_index = history.len() - 1;
             let (last_ledger, _) = history.get(last_index).unwrap();
             if last_ledger == current_ledger {
@@ -2553,7 +2611,7 @@ impl VaultContract {
         if new_amount > 0 {
             let board_len = board.len();
             // Qualifies if board has room or user beats the last entry
-            let qualifies = (board_len as u32) < max_size || {
+            let qualifies = board_len < max_size || {
                 if board_len > 0 {
                     new_amount > board.get(board_len - 1).unwrap().amount
                 } else {
@@ -2594,7 +2652,7 @@ impl VaultContract {
                 }
 
                 // Trim to max_size
-                while (final_board.len() as u32) > max_size {
+                while final_board.len() > max_size {
                     final_board.pop_back();
                 }
 

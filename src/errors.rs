@@ -59,4 +59,8 @@ pub enum VaultError {
     InvalidAddress = 35,
     /// reward_rate_bps exceeds the maximum allowed cap (issue #72).
     RateTooHigh = 36,
+    /// stake rejected because user already holds the configured max positions.
+    MaxPositionsReached = 37,
+    /// set_max_positions_per_user rejected because max exceeds 10.
+    MaxPositionsTooHigh = 38,
 }
