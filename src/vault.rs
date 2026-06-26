@@ -6,7 +6,8 @@ use crate::{
     storage::{
         CampaignInfo, ClaimWindow, ContractMetadata, DataKey, InterfaceId, LeaderboardEntry,
         OptionalPosition, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
-        StakeStreak, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
+        StakeStreak, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary, VestingEntry,
+        EpochState,
     },
 };
 
@@ -2751,8 +2752,33 @@ impl VaultContract {
             .get(&DataKey::Token)
             .ok_or(VaultError::NotInitialized)?;
 
-        let token_client = token::Client::new(env, &token_addr);
-        token_client.transfer(&env.current_contract_address(), staker, &reward);
+        let vesting_period: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VestingPeriod)
+            .unwrap_or(0);
+
+        if vesting_period > 0 {
+            let mut entries: Vec<VestingEntry> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::VestingEntries(staker.clone()))
+                .unwrap_or_else(|| Vec::new(env));
+            if entries.len() >= 10 {
+                return Err(VaultError::VestingQueueFull);
+            }
+            let claimable_at_ledger = env.ledger().sequence().saturating_add(vesting_period);
+            entries.push_back(VestingEntry {
+                amount: reward,
+                claimable_at_ledger,
+            });
+            env.storage()
+                .persistent()
+                .set(&DataKey::VestingEntries(staker.clone()), &entries);
+        } else {
+            let token_client = token::Client::new(env, &token_addr);
+            token_client.transfer(&env.current_contract_address(), staker, &reward);
+        }
 
         balance::set_reward_pool_balance(env, reward_pool - reward);
         // Reduce accrued by the amount paid; cap-deferred remainder stays in accrued.
@@ -3062,6 +3088,72 @@ impl VaultContract {
             .unwrap_or_else(|| Vec::new(&env))
     }
 
+    pub fn set_vesting_period(env: Env, admin: Address, ledgers: u32) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        let _ = admin;
+        env.storage().instance().set(&DataKey::VestingPeriod, &ledgers);
+        Ok(())
+    }
+
+    pub fn vesting_balance(env: Env, user: Address) -> Vec<VestingEntry> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VestingEntries(user))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    pub fn withdraw_vested(env: Env, user: Address) -> Result<i128, VaultError> {
+        user.require_auth();
+
+        let mut entries: Vec<VestingEntry> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VestingEntries(user.clone()))
+            .ok_or(VaultError::NothingToWithdraw)?;
+
+        let current_ledger = env.ledger().sequence();
+        let mut matured_total: i128 = 0;
+        let mut remaining_entries = Vec::new(&env);
+
+        let mut i = 0;
+        while i < entries.len() {
+            let entry = entries.get(i).unwrap();
+            if current_ledger >= entry.claimable_at_ledger {
+                matured_total = matured_total
+                    .checked_add(entry.amount)
+                    .ok_or(VaultError::ArithmeticError)?;
+            } else {
+                remaining_entries.push_back(entry);
+            }
+            i += 1;
+        }
+
+        if matured_total == 0 {
+            return Err(VaultError::NothingToWithdraw);
+        }
+
+        if remaining_entries.is_empty() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::VestingEntries(user.clone()));
+        } else {
+            env.storage()
+                .persistent()
+                .set(&DataKey::VestingEntries(user.clone()), &remaining_entries);
+        }
+
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(VaultError::NotInitialized)?;
+
+        let token_client = token::Client::new(&env, &token_addr);
+        token_client.transfer(&env.current_contract_address(), &user, &matured_total);
+
+        Ok(matured_total)
+    }
+
     // ── Issue #104: interface detection ──────────────────────────────────────
 
     /// The compile-time set of interfaces this deployment supports.
@@ -3073,6 +3165,7 @@ impl VaultContract {
         InterfaceId::Base,
         InterfaceId::Lockup,
         InterfaceId::Whitelist,
+        InterfaceId::VestingSchedule,
     ];
 
     /// Returns `true` if this contract deployment supports the given interface.

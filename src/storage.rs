@@ -74,6 +74,9 @@ pub enum DataKey {
     Stopped,
     // Pool deposit cap (used by balance.rs and vault.rs)
     PoolCap,
+    // Task 2: Vesting
+    VestingPeriod,
+    VestingEntries(Address),
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -307,4 +310,11 @@ pub struct StakeStreak {
     pub current_streak: u32,
     pub longest_streak: u32,
     pub last_active_wave: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct VestingEntry {
+    pub amount: i128,
+    pub claimable_at_ledger: u32,
 }
