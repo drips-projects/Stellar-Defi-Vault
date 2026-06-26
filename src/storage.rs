@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, Address, Vec};
+use soroban_sdk::{contracttype, Address, String, Vec};
 
 /// Storage keys for all persistent and instance state in the vault.
 ///
@@ -158,6 +158,7 @@ pub struct LeaderboardEntry {
 }
 
 /// Type alias for the leaderboard vector used in storage and queries.
+#[allow(dead_code)]
 pub type Leaderboard = Vec<LeaderboardEntry>;
 
 /// Current stake position for a user.
@@ -191,6 +192,15 @@ pub struct PoolConfig {
     pub reward_token: Address,
     pub reward_rate_bps: u32,
     pub paused: bool,
+}
+
+/// Contract metadata returned by `contract_metadata`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContractMetadata {
+    pub name: String,
+    pub version: String,
+    pub description: String,
 }
 
 /// Per-user reward claim window used to enforce the optional claim cap.
