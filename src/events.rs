@@ -280,3 +280,10 @@ pub fn description_updated(env: &Env, admin: &Address, description: &soroban_sdk
     env.events()
         .publish(topics, (description.clone(), env.ledger().sequence()));
 }
+
+/// Emitted when a user merges their staking positions.
+pub fn positions_merged(env: &Env, user: &Address, count_merged: u32, total_amount: i128) {
+    let topics = (symbol_short!("merge"), user);
+    env.events()
+        .publish(topics, (count_merged, total_amount, env.ledger().sequence()));
+}

@@ -3719,4 +3719,37 @@ impl VaultContract {
         })
     }
 
+    /// Consolidate multiple staking positions into a single position.
+    ///
+    /// For the current scalar share balance layout, this performs a reward accrual step
+    /// and resets the staking timestamp, serving as a forward-compatible graceful no-op.
+    pub fn merge_positions(env: Env, user: Address) -> Result<(), VaultError> {
+        user.require_auth();
+
+        let shares = balance::get_shares(&env, &user);
+        if shares == 0 {
+            return Err(VaultError::PositionNotFound);
+        }
+
+        // Accrue any pending rewards first
+        Self::accrue_rewards(&env, &user, shares)?;
+
+        // In a multi-position model, we would aggregate the amounts and combine lockups.
+        // In the current scalar model, we consolidate the single position.
+        let total_shares = balance::get_total_shares(&env);
+        let total_deposited = balance::get_total_deposited(&env);
+        let total_amount = balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
+
+        // Reset locking period by updating the staked_at sequence to current ledger sequence
+        let current_ledger = env.ledger().sequence();
+        env.storage()
+            .persistent()
+            .set(&DataKey::StakedAtLedger(user.clone()), &current_ledger);
+
+        // Emit positions_merged event (user, count_merged, total_amount)
+        events::positions_merged(&env, &user, 1, total_amount);
+
+        Ok(())
+    }
+
 }
