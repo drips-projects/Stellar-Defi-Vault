@@ -59,6 +59,7 @@ The compiled `.wasm` file will be at `target/wasm32-unknown-unknown/release/stel
 - Ensure `cargo clippy --features testutils` passes with no warnings.
 - All new functionality must include unit tests.
 - Public functions must have doc comments (`///`).
+- Keep `CONTRACT_VERSION` in sync with `Cargo.toml` when updating the contract version.
 
 ## PR Checklist
 

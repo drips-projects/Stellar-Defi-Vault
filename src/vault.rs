@@ -4,9 +4,9 @@ use crate::{
     admin, balance, errors::VaultError, events,
     nft::StakeReceiptNFTClient,
     storage::{
-        CampaignInfo, ClaimWindow, DataKey, InterfaceId, LeaderboardEntry, OptionalPosition,
-        PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition, StakeStreak,
-        UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
+        CampaignInfo, ClaimWindow, ContractMetadata, DataKey, InterfaceId, LeaderboardEntry,
+        OptionalPosition, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
+        StakeStreak, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
     },
 };
 
@@ -14,6 +14,8 @@ use crate::{
 pub(crate) const MAX_STAKE_HISTORY: u32 = 5;
 
 pub(crate) const CONTRACT_VERSION: &str = "0.1.0";
+pub(crate) const CONTRACT_NAME: &str = "stellar-staking-pool";
+pub(crate) const CONTRACT_DESCRIPTION: &str = "A staking pool contract for Stellar DeFi vault positions.";
 pub(crate) const BOOST_BPS_BASE: u32 = 10_000;
 pub(crate) const MAX_BOOST_TIERS: u32 = 5;
 pub(crate) const MAX_HISTORY_SNAPSHOTS: u32 = 100;
@@ -167,6 +169,15 @@ impl VaultContract {
     /// Read-only query for the deployed contract version.
     pub fn get_version(env: Env) -> String {
         String::from_str(&env, CONTRACT_VERSION)
+    }
+
+    /// Read-only metadata for external tools and explorers.
+    pub fn contract_metadata(env: Env) -> ContractMetadata {
+        ContractMetadata {
+            name: String::from_str(&env, CONTRACT_NAME),
+            version: String::from_str(&env, CONTRACT_VERSION),
+            description: String::from_str(&env, CONTRACT_DESCRIPTION),
+        }
     }
 
     /// Read-only query for the token address that users must deposit to stake.

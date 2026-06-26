@@ -12,7 +12,8 @@ use crate::{
     nft::{StakeReceiptNFT, StakeReceiptNFTClient},
     storage::{UnstakeCheckResult},
     vault::{
-        VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_VERSION,
+        VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_DESCRIPTION, CONTRACT_NAME,
+        CONTRACT_VERSION,
         STELLAR_LEDGERS_PER_YEAR,
     },
 };
@@ -157,6 +158,16 @@ fn test_get_version_returns_contract_version() {
         f.vault.get_version(),
         soroban_sdk::String::from_str(&f.env, CONTRACT_VERSION)
     );
+}
+
+#[test]
+fn test_contract_metadata_returns_constants() {
+    let f = VaultFixture::new();
+    let metadata = f.vault.contract_metadata();
+
+    assert_eq!(metadata.name, soroban_sdk::String::from_str(&f.env, CONTRACT_NAME));
+    assert_eq!(metadata.version, soroban_sdk::String::from_str(&f.env, CONTRACT_VERSION));
+    assert_eq!(metadata.description, soroban_sdk::String::from_str(&f.env, CONTRACT_DESCRIPTION));
 }
 
 // ── deposit ───────────────────────────────────────────────────────────────────
