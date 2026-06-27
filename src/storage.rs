@@ -73,6 +73,13 @@ pub enum DataKey {
     KycApproved(Address),
     Stopped,
     PoolCap,
+    // Issue #118: per-user approved relayer
+    ApprovedRelayer(Address),
+    // Issue #124: rich rate change history (Vec<RateHistoryEntry>)
+    RewardRateHistory,
+    // Issue #126: yield source whitelist and running total
+    YieldSource(Address),
+    TotalRewardsAdded,
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -316,6 +323,21 @@ pub struct StakingEfficiency {
     pub estimated_if_compounded: i128,
     pub efficiency_bps: i128,
 // ── Issue #114: on-chain changelog ───────────────────────────────────────────
+
+/// One entry in the reward-rate change history (issue #124).
+///
+/// - `old_rate_bps`: reward rate before the change.
+/// - `new_rate_bps`: reward rate after the change.
+/// - `changed_at_ledger`: ledger sequence at which the change was made.
+/// - `changed_by`: admin address that triggered the change.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateHistoryEntry {
+    pub old_rate_bps: i128,
+    pub new_rate_bps: i128,
+    pub changed_at_ledger: u32,
+    pub changed_by: Address,
+}
 
 /// One entry in the rolling admin configuration changelog (issue #114).
 ///
