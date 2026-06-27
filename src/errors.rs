@@ -133,4 +133,10 @@ pub enum VaultError {
     NothingToWithdraw = 43,
     /// Returned when an epoch cannot be finalized because the configured window has not elapsed.
     EpochNotFinalized = 44,
+    /// Caller is not an approved relayer for the target user (issue #118).
+    RelayerNotApproved = 41,
+    /// Caller is not on the yield source whitelist (issue #126).
+    NotYieldSource = 42,
+    /// notify_reward_added called with a zero or negative amount (issue #126).
+    InvalidRewardAmount = 43,
 }

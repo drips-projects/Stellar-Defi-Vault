@@ -1,4 +1,4 @@
-use crate::storage::{ChangelogEntry, ClaimWindow, DataKey, VestingEntry};
+use crate::storage::{ChangelogEntry, ClaimWindow, DataKey, RateHistoryEntry, VestingEntry};
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 pub fn get_shares(env: &Env, user: &Address) -> i128 {
