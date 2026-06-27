@@ -3058,6 +3058,8 @@ fn test_staking_efficiency_score_never_exceeds_10000_bps() {
 
     let eff = f.vault.staking_efficiency_score(&f.alice);
     assert!(eff.efficiency_bps <= 10_000, "efficiency is capped at 10_000 bps");
+}
+
 // ── Issue #114: get_changelog ────────────────────────────────────────────────
 
 #[test]
@@ -3244,4 +3246,225 @@ fn test_pool_uptime_matches_exact_ledger_delta() {
     set_ledger(&f.env, 17280);
     // ~1 day in ledgers; verify exact value.
     assert_eq!(f.vault.pool_uptime_ledgers(), 17_280);
+}
+
+// ── Issue #118: relayer approval ─────────────────────────────────────────────
+
+#[test]
+fn test_approve_relayer_stores_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert!(f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_approve_relayer_requires_user_auth() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert_eq!(f.env.auths()[0].0, f.alice);
+}
+
+#[test]
+fn test_revoke_relayer_removes_approval() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert!(f.vault.is_approved_relayer(&f.alice, &relayer));
+    f.vault.revoke_relayer(&f.alice, &relayer);
+    assert!(!f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_is_approved_relayer_false_for_unknown() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    assert!(!f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_claim_on_behalf_pays_user_not_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+
+    f.vault.set_reward_rate_bps(&500);
+    f.token_admin.mint(&f.alice, &10_000_000);
+    f.token_admin.mint(&f.admin, &50_000_000);
+    f.vault.fund_reward_pool(&f.admin, &50_000_000);
+    f.vault.stake(&f.alice, &10_000_000);
+    set_ledger(&f.env, 200_000);
+
+    f.vault.approve_relayer(&f.alice, &relayer);
+    let reward = f.vault.claim_on_behalf(&relayer, &f.alice);
+    assert!(reward > 0, "reward must be positive");
+    // relayer balance stays 0; only alice receives tokens
+    assert_eq!(f.token.balance(&relayer), 0);
+    assert!(f.token.balance(&f.alice) > 0);
+}
+
+#[test]
+fn test_claim_on_behalf_fails_for_unapproved_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+
+    f.token_admin.mint(&f.alice, &10_000_000);
+    f.vault.stake(&f.alice, &10_000_000);
+
+    let result = f.vault.try_claim_on_behalf(&relayer, &f.alice);
+    assert!(result.is_err());
+}
+
+// ── Issue #124: reward rate history ──────────────────────────────────────────
+
+#[test]
+fn test_reward_rate_history_empty_initially() {
+    let f = VaultFixture::new();
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_reward_rate_history_records_each_change() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&100);
+    f.vault.set_reward_rate_bps(&200);
+    f.vault.set_reward_rate_bps(&300);
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 3);
+}
+
+#[test]
+fn test_reward_rate_history_entry_values() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&150);
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 1);
+    let entry = history.get(0).unwrap();
+    assert_eq!(entry.old_rate_bps, 0);
+    assert_eq!(entry.new_rate_bps, 150);
+}
+
+#[test]
+fn test_reward_rate_history_capped_at_20() {
+    let f = VaultFixture::new();
+    for i in 1u32..=25 {
+        f.vault.set_reward_rate_bps(&(i * 10));
+    }
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 20, "history must be capped at 20 entries");
+}
+
+// ── Issue #125: minimum_lock_remaining ───────────────────────────────────────
+
+#[test]
+fn test_minimum_lock_remaining_zero_when_no_lock() {
+    let f = VaultFixture::new();
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    // No lock period set — should return 0.
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 0);
+}
+
+#[test]
+fn test_minimum_lock_remaining_full_before_unlock() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&1_000);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    // Still at ledger 0 — 1000 ledgers remain.
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 1_000);
+}
+
+#[test]
+fn test_minimum_lock_remaining_decreases_over_time() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&1_000);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    set_ledger(&f.env, 400);
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 600);
+}
+
+#[test]
+fn test_minimum_lock_remaining_zero_after_lock_expires() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&500);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    set_ledger(&f.env, 1_000);
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 0);
+}
+
+#[test]
+fn test_minimum_lock_remaining_fails_with_no_position() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&500);
+    let result = f.vault.try_minimum_lock_remaining(&f.alice);
+    assert!(result.is_err());
+}
+
+// ── Issue #126: yield source whitelist and notify_reward_added ───────────────
+
+#[test]
+fn test_add_yield_source_whitelists_address() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert!(f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_add_yield_source_requires_admin_auth() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert_eq!(f.env.auths()[0].0, f.admin);
+}
+
+#[test]
+fn test_remove_yield_source_revokes_whitelist() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert!(f.vault.is_yield_source(&source));
+    f.vault.remove_yield_source(&source);
+    assert!(!f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_is_yield_source_false_for_unknown() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    assert!(!f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_notify_reward_added_increments_total() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+
+    assert_eq!(f.vault.get_total_rewards_added(), 0);
+    f.vault.notify_reward_added(&source, &5_000);
+    assert_eq!(f.vault.get_total_rewards_added(), 5_000);
+    f.vault.notify_reward_added(&source, &3_000);
+    assert_eq!(f.vault.get_total_rewards_added(), 8_000);
+}
+
+#[test]
+fn test_notify_reward_added_fails_for_non_source() {
+    let f = VaultFixture::new();
+    let non_source = Address::generate(&f.env);
+    let result = f.vault.try_notify_reward_added(&non_source, &1_000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_notify_reward_added_fails_for_zero_amount() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    let result = f.vault.try_notify_reward_added(&source, &0);
+    assert!(result.is_err());
 }

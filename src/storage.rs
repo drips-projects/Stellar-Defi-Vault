@@ -74,12 +74,6 @@ pub enum DataKey {
     Stopped,
     PoolCap,
     // Issue #118: per-user approved relayer
-    ApprovedRelayer(Address),
-    // Issue #124: rich rate change history (Vec<RateHistoryEntry>)
-    RewardRateHistory,
-    // Issue #126: yield source whitelist and running total
-    YieldSource(Address),
-    TotalRewardsAdded,
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -322,6 +316,8 @@ pub struct StakingEfficiency {
     pub total_claimed: i128,
     pub estimated_if_compounded: i128,
     pub efficiency_bps: i128,
+}
+
 // ── Issue #114: on-chain changelog ───────────────────────────────────────────
 
 /// One entry in the reward-rate change history (issue #124).

@@ -486,6 +486,8 @@ pub fn add_user_total_claimed(env: &Env, user: &Address, amount: i128) {
     let current = get_user_total_claimed(env, user);
     let key = (Symbol::new(env, "t_claimed"), user.clone());
     env.storage().persistent().set(&key, &(current + amount));
+}
+
 // ── Issue #114: on-chain admin changelog ─────────────────────────────────────
 // Key "chlg" (4 chars, short symbol) stored in instance storage.
 
@@ -546,23 +548,21 @@ pub fn set_initialized_at_ledger(env: &Env, ledger: u32) {
 }
 
 // ── Issue #118: relayer approval ─────────────────────────────────────────────
+// Use a (symbol, address) tuple key to avoid adding a new DataKey variant.
 
 pub fn get_approved_relayer(env: &Env, user: &Address) -> Option<Address> {
-    env.storage()
-        .persistent()
-        .get(&DataKey::ApprovedRelayer(user.clone()))
+    let key = (Symbol::new(env, "aprv_rl"), user.clone());
+    env.storage().persistent().get(&key)
 }
 
 pub fn set_approved_relayer(env: &Env, user: &Address, relayer: &Address) {
-    env.storage()
-        .persistent()
-        .set(&DataKey::ApprovedRelayer(user.clone()), relayer);
+    let key = (Symbol::new(env, "aprv_rl"), user.clone());
+    env.storage().persistent().set(&key, relayer);
 }
 
 pub fn remove_approved_relayer(env: &Env, user: &Address) {
-    env.storage()
-        .persistent()
-        .remove(&DataKey::ApprovedRelayer(user.clone()));
+    let key = (Symbol::new(env, "aprv_rl"), user.clone());
+    env.storage().persistent().remove(&key);
 }
 
 // ── Issue #124: rich reward-rate history ─────────────────────────────────────
@@ -573,46 +573,41 @@ pub const MAX_RICH_RATE_HISTORY: u32 = 20;
 pub fn get_reward_rate_history(env: &Env) -> Vec<RateHistoryEntry> {
     env.storage()
         .instance()
-        .get(&DataKey::RewardRateHistory)
+        .get(&symbol_short!("rrt_hist"))
         .unwrap_or(Vec::new(env))
 }
 
 pub fn set_reward_rate_history(env: &Env, history: &Vec<RateHistoryEntry>) {
     env.storage()
         .instance()
-        .set(&DataKey::RewardRateHistory, history);
+        .set(&symbol_short!("rrt_hist"), history);
 }
 
 // ── Issue #126: yield source whitelist ───────────────────────────────────────
 
 pub fn is_yield_source(env: &Env, source: &Address) -> bool {
-    env.storage()
-        .persistent()
-        .get(&DataKey::YieldSource(source.clone()))
-        .unwrap_or(false)
+    let key = (Symbol::new(env, "yld_src"), source.clone());
+    env.storage().persistent().get(&key).unwrap_or(false)
 }
 
 pub fn set_yield_source(env: &Env, source: &Address, approved: bool) {
+    let key = (Symbol::new(env, "yld_src"), source.clone());
     if approved {
-        env.storage()
-            .persistent()
-            .set(&DataKey::YieldSource(source.clone()), &true);
+        env.storage().persistent().set(&key, &true);
     } else {
-        env.storage()
-            .persistent()
-            .remove(&DataKey::YieldSource(source.clone()));
+        env.storage().persistent().remove(&key);
     }
 }
 
 pub fn get_total_rewards_added(env: &Env) -> i128 {
     env.storage()
         .instance()
-        .get(&DataKey::TotalRewardsAdded)
+        .get(&symbol_short!("tot_rwa"))
         .unwrap_or(0i128)
 }
 
 pub fn set_total_rewards_added(env: &Env, total: i128) {
     env.storage()
         .instance()
-        .set(&DataKey::TotalRewardsAdded, &total);
+        .set(&symbol_short!("tot_rwa"), &total);
 }

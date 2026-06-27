@@ -6,14 +6,10 @@ use crate::{
     events,
     nft::StakeReceiptNFTClient,
     storage::{
-        CampaignInfo, ClaimWindow, ContractMetadata, DataKey, InterfaceId, LeaderboardEntry,
-        OptionalPosition, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
-        StakeStreak, StakingEfficiency, UnbondingPosition, UnstakeCheckResult, UserStats,
-        UserSummary,
         CampaignInfo, ChangelogEntry, ClaimWindow, ContractMetadata, DataKey, InterfaceId,
         LeaderboardEntry, PoolConfig, PoolStats, RateHistoryEntry, StakeAction, StakeHistoryEntry,
-        StakePosition, StakeStreak, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
-        VestingEntry,
+        StakePosition, StakeStreak, StakingEfficiency, UnbondingPosition, UnstakeCheckResult,
+        UserStats, UserSummary, VestingEntry,
     },
 };
 
@@ -3441,6 +3437,43 @@ impl VaultContract {
             .unwrap_or(0)
     }
 
+    // ── Issue #125: minimum lock remaining ────────────────────────────────────
+
+    /// Read-only query for how many ledgers remain before the user's lock-up expires.
+    ///
+    /// Returns `max(0, staked_at_ledger + lock_period - current_ledger)` using
+    /// saturating subtraction to avoid underflow. Returns `0` when no lock
+    /// period is configured or the lock has already elapsed.
+    ///
+    /// Reverts with `PositionNotFound` if the user has no active staking position.
+    /// No auth required.
+    pub fn minimum_lock_remaining(env: Env, user: Address) -> Result<u32, VaultError> {
+        // User must have an open position.
+        if balance::get_shares(&env, &user) == 0 {
+            return Err(VaultError::PositionNotFound);
+        }
+
+        let lock_period: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LockPeriod)
+            .unwrap_or(0);
+
+        if lock_period == 0 {
+            return Ok(0);
+        }
+
+        let staked_at: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakedAtLedger(user))
+            .unwrap_or(0);
+
+        let unlock_ledger = staked_at.saturating_add(lock_period);
+        let current = env.ledger().sequence();
+        Ok(unlock_ledger.saturating_sub(current))
+    }
+
     // ── Issue #99: staking streak tracker ──────────────────────────────────────
 
     /// Admin: record which users were active in a completed Wave.
@@ -4024,7 +4057,62 @@ impl VaultContract {
         Ok(reward)
     }
 
-}
+    // ── Issue #126: yield source whitelist and reward notification ────────────
+
+    /// Admin: add an address to the yield source whitelist.
+    ///
+    /// Only whitelisted sources can call `notify_reward_added`. Requires admin auth.
+    pub fn add_yield_source(env: Env, source: Address) -> Result<(), VaultError> {
+        let admin = admin::get_admin(&env)?;
+        admin.require_auth();
+        balance::set_yield_source(&env, &source, true);
+        events::yield_source_added(&env, &admin, &source);
+        Ok(())
+    }
+
+    /// Admin: remove an address from the yield source whitelist.
+    ///
+    /// After removal, that address can no longer call `notify_reward_added`.
+    /// Requires admin auth.
+    pub fn remove_yield_source(env: Env, source: Address) -> Result<(), VaultError> {
+        let admin = admin::get_admin(&env)?;
+        admin.require_auth();
+        balance::set_yield_source(&env, &source, false);
+        events::yield_source_removed(&env, &admin, &source);
+        Ok(())
+    }
+
+    /// Read-only: returns `true` if `source` is on the yield source whitelist.
+    pub fn is_yield_source(env: Env, source: Address) -> bool {
+        balance::is_yield_source(&env, &source)
+    }
+
+    /// Yield source: notify the vault that external rewards have been deposited.
+    ///
+    /// Caller must be on the yield source whitelist.  `amount` must be > 0.
+    /// Increments the running `TotalRewardsAdded` counter and emits `reward_added`.
+    /// Does not transfer any tokens — the caller is responsible for the actual transfer.
+    pub fn notify_reward_added(env: Env, caller: Address, amount: i128) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if !balance::is_yield_source(&env, &caller) {
+            return Err(VaultError::NotYieldSource);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidRewardAmount);
+        }
+
+        let new_total = balance::get_total_rewards_added(&env).saturating_add(amount);
+        balance::set_total_rewards_added(&env, new_total);
+        events::reward_added(&env, &caller, amount);
+        Ok(())
+    }
+
+    /// Read-only: returns the cumulative amount reported via `notify_reward_added`.
+    pub fn get_total_rewards_added(env: Env) -> i128 {
+        balance::get_total_rewards_added(&env)
+    }
+
     // ── Issue #117: pool_uptime_ledgers ───────────────────────────────────────
 
     /// Read-only query for how many ledgers the pool has been active.
