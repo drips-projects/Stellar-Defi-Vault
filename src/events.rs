@@ -312,6 +312,7 @@ pub fn auto_paused(env: &Env, reward_balance: i128, threshold: i128) {
 // ── Issue #130: KYC status changed event ──────────────────────────────────────
 
 /// Emitted for each address updated by bulk_set_kyc.
+#[allow(dead_code)]
 pub fn kyc_status_changed(env: &Env, user: &Address, approved: bool) {
     let topics = (symbol_short!("kyc_chg"), user);
     env.events()
