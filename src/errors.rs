@@ -125,4 +125,12 @@ pub enum VaultError {
     /// Reserved for future caller-supplied rate conversion flows; no current
     /// public function returns this variant.
     InvalidRate = 40,
+    /// Returned by epoch-mode entrypoints when the contract is in the wrong mode.
+    EpochModeConflict = 41,
+    /// Returned when a vesting queue already holds the maximum supported entries.
+    VestingQueueFull = 42,
+    /// Returned when a vesting withdrawal is requested but nothing has matured yet.
+    NothingToWithdraw = 43,
+    /// Returned when an epoch cannot be finalized because the configured window has not elapsed.
+    EpochNotFinalized = 44,
 }
