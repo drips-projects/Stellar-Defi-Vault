@@ -73,7 +73,17 @@ pub enum DataKey {
     KycApproved(Address),
     Stopped,
     PoolCap,
-    // Issue #118: per-user approved relayer
+    // Task 2: Vesting
+    VestingPeriod,
+    VestingEntries(Address),
+    // Task 3: Epoch Mode
+    EpochMode,
+    CurrentEpoch,
+    EpochLedgers,
+    EpochRewardPerEpoch,
+    EpochRewardFactor(u32),
+    UserEpochSnapshot(Address, u32),
+    UserLastClaimedEpoch(Address),
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -302,65 +312,18 @@ pub struct StakeStreak {
     pub last_active_wave: u32,
 }
 
-/// Staking efficiency score for a user (issue #135).
-///
-/// - `total_claimed`: cumulative rewards the user has actually claimed.
-/// - `estimated_if_compounded`: approximate total rewards if all claims had been
-///   immediately restaked (daily compounding, no boost multipliers). This is an
-///   integer-math approximation; see `staking_efficiency_score` for caveats.
-/// - `efficiency_bps`: `total_claimed * 10_000 / estimated_if_compounded`,
-///   capped at 10_000. Returns 0 when `estimated_if_compounded` is 0.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct StakingEfficiency {
-    pub total_claimed: i128,
-    pub estimated_if_compounded: i128,
-    pub efficiency_bps: i128,
-}
-
-// ── Issue #114: on-chain changelog ───────────────────────────────────────────
-
-/// One entry in the reward-rate change history (issue #124).
-///
-/// - `old_rate_bps`: reward rate before the change.
-/// - `new_rate_bps`: reward rate after the change.
-/// - `changed_at_ledger`: ledger sequence at which the change was made.
-/// - `changed_by`: admin address that triggered the change.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct RateHistoryEntry {
-    pub old_rate_bps: i128,
-    pub new_rate_bps: i128,
-    pub changed_at_ledger: u32,
-    pub changed_by: Address,
-}
-
-/// One entry in the rolling admin configuration changelog (issue #114).
-///
-/// - `changed_by`: admin address that triggered the change.
-/// - `change_type`: human-readable label, e.g. "rate_changed", "paused".
-/// - `old_value`: previous numeric value; boolean states encode as 0/1.
-/// - `new_value`: new numeric value after the change.
-/// - `ledger`: ledger sequence at which the change was recorded.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangelogEntry {
-    pub changed_by: Address,
-    pub change_type: soroban_sdk::String,
-    pub old_value: i128,
-    pub new_value: i128,
-    pub ledger: u32,
-}
-
-// ── Issue #116: per-user vesting entries ─────────────────────────────────────
-
-/// One scheduled vesting entry for a user (issue #116).
-///
-/// - `amount`: token amount that vests at `vested_at_ledger`.
-/// - `vested_at_ledger`: ledger sequence after which the entry can be claimed.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VestingEntry {
     pub amount: i128,
-    pub vested_at_ledger: u32,
+    pub claimable_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EpochState {
+    pub epoch_number: u32,
+    pub started_at: u32,
+    pub reward_pool: i128,
+    pub total_staked_snapshot: i128,
 }

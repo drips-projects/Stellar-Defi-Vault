@@ -547,67 +547,15 @@ pub fn set_initialized_at_ledger(env: &Env, ledger: u32) {
         .set(&symbol_short!("inal"), &ledger);
 }
 
-// ── Issue #118: relayer approval ─────────────────────────────────────────────
-// Use a (symbol, address) tuple key to avoid adding a new DataKey variant.
+// ── Issue #113: auto-restake toggle ───────────────────────────────────────────
+// Key ("auto_rst", user) stored in persistent storage (same pattern as streak).
 
-pub fn get_approved_relayer(env: &Env, user: &Address) -> Option<Address> {
-    let key = (Symbol::new(env, "aprv_rl"), user.clone());
-    env.storage().persistent().get(&key)
-}
-
-pub fn set_approved_relayer(env: &Env, user: &Address, relayer: &Address) {
-    let key = (Symbol::new(env, "aprv_rl"), user.clone());
-    env.storage().persistent().set(&key, relayer);
-}
-
-pub fn remove_approved_relayer(env: &Env, user: &Address) {
-    let key = (Symbol::new(env, "aprv_rl"), user.clone());
-    env.storage().persistent().remove(&key);
-}
-
-// ── Issue #124: rich reward-rate history ─────────────────────────────────────
-
-/// Maximum entries kept in the rich rate history (sliding window).
-pub const MAX_RICH_RATE_HISTORY: u32 = 20;
-
-pub fn get_reward_rate_history(env: &Env) -> Vec<RateHistoryEntry> {
-    env.storage()
-        .instance()
-        .get(&symbol_short!("rrt_hist"))
-        .unwrap_or(Vec::new(env))
-}
-
-pub fn set_reward_rate_history(env: &Env, history: &Vec<RateHistoryEntry>) {
-    env.storage()
-        .instance()
-        .set(&symbol_short!("rrt_hist"), history);
-}
-
-// ── Issue #126: yield source whitelist ───────────────────────────────────────
-
-pub fn is_yield_source(env: &Env, source: &Address) -> bool {
-    let key = (Symbol::new(env, "yld_src"), source.clone());
+pub fn get_auto_restake(env: &Env, user: &Address) -> bool {
+    let key = (Symbol::new(env, "auto_rst"), user.clone());
     env.storage().persistent().get(&key).unwrap_or(false)
 }
 
-pub fn set_yield_source(env: &Env, source: &Address, approved: bool) {
-    let key = (Symbol::new(env, "yld_src"), source.clone());
-    if approved {
-        env.storage().persistent().set(&key, &true);
-    } else {
-        env.storage().persistent().remove(&key);
-    }
-}
-
-pub fn get_total_rewards_added(env: &Env) -> i128 {
-    env.storage()
-        .instance()
-        .get(&symbol_short!("tot_rwa"))
-        .unwrap_or(0i128)
-}
-
-pub fn set_total_rewards_added(env: &Env, total: i128) {
-    env.storage()
-        .instance()
-        .set(&symbol_short!("tot_rwa"), &total);
+pub fn set_auto_restake(env: &Env, user: &Address, enabled: bool) {
+    let key = (Symbol::new(env, "auto_rst"), user.clone());
+    env.storage().persistent().set(&key, &enabled);
 }
