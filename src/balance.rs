@@ -1,4 +1,4 @@
-use crate::storage::{ChangelogEntry, ClaimWindow, DataKey, VestingEntry};
+use crate::storage::{ChangelogEntry, ClaimWindow, DataKey, RateHistoryEntry, VestingEntry};
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
 pub fn get_shares(env: &Env, user: &Address) -> i128 {
@@ -543,4 +543,76 @@ pub fn set_initialized_at_ledger(env: &Env, ledger: u32) {
     env.storage()
         .instance()
         .set(&symbol_short!("inal"), &ledger);
+}
+
+// ── Issue #118: relayer approval ─────────────────────────────────────────────
+
+pub fn get_approved_relayer(env: &Env, user: &Address) -> Option<Address> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ApprovedRelayer(user.clone()))
+}
+
+pub fn set_approved_relayer(env: &Env, user: &Address, relayer: &Address) {
+    env.storage()
+        .persistent()
+        .set(&DataKey::ApprovedRelayer(user.clone()), relayer);
+}
+
+pub fn remove_approved_relayer(env: &Env, user: &Address) {
+    env.storage()
+        .persistent()
+        .remove(&DataKey::ApprovedRelayer(user.clone()));
+}
+
+// ── Issue #124: rich reward-rate history ─────────────────────────────────────
+
+/// Maximum entries kept in the rich rate history (sliding window).
+pub const MAX_RICH_RATE_HISTORY: u32 = 20;
+
+pub fn get_reward_rate_history(env: &Env) -> Vec<RateHistoryEntry> {
+    env.storage()
+        .instance()
+        .get(&DataKey::RewardRateHistory)
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn set_reward_rate_history(env: &Env, history: &Vec<RateHistoryEntry>) {
+    env.storage()
+        .instance()
+        .set(&DataKey::RewardRateHistory, history);
+}
+
+// ── Issue #126: yield source whitelist ───────────────────────────────────────
+
+pub fn is_yield_source(env: &Env, source: &Address) -> bool {
+    env.storage()
+        .persistent()
+        .get(&DataKey::YieldSource(source.clone()))
+        .unwrap_or(false)
+}
+
+pub fn set_yield_source(env: &Env, source: &Address, approved: bool) {
+    if approved {
+        env.storage()
+            .persistent()
+            .set(&DataKey::YieldSource(source.clone()), &true);
+    } else {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::YieldSource(source.clone()));
+    }
+}
+
+pub fn get_total_rewards_added(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::TotalRewardsAdded)
+        .unwrap_or(0i128)
+}
+
+pub fn set_total_rewards_added(env: &Env, total: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::TotalRewardsAdded, &total);
 }
