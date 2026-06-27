@@ -300,30 +300,9 @@ pub fn description_updated(env: &Env, admin: &Address, description: &soroban_sdk
         .publish(topics, (description.clone(), env.ledger().sequence()));
 }
 
-// ── Issue #129: auto-pause event ──────────────────────────────────────────────
-
-/// Emitted when the pool auto-pauses because reward balance fell below threshold.
-pub fn auto_paused(env: &Env, reward_balance: i128, threshold: i128) {
-    let topics = (symbol_short!("auto_paus"),);
+/// Emitted when a user merges their staking positions.
+pub fn positions_merged(env: &Env, user: &Address, count_merged: u32, total_amount: i128) {
+    let topics = (symbol_short!("merge"), user);
     env.events()
-        .publish(topics, (reward_balance, threshold, env.ledger().sequence()));
-}
-
-// ── Issue #130: KYC status changed event ──────────────────────────────────────
-
-/// Emitted for each address updated by bulk_set_kyc.
-#[allow(dead_code)]
-pub fn kyc_status_changed(env: &Env, user: &Address, approved: bool) {
-    let topics = (symbol_short!("kyc_chg"), user);
-    env.events()
-        .publish(topics, (approved, env.ledger().sequence()));
-}
-
-// ── Issue #113: auto-restake event ────────────────────────────────────────────
-
-/// Emitted when rewards are automatically restaked into a user's position.
-pub fn auto_restaked(env: &Env, user: &Address, amount: i128) {
-    let topics = (symbol_short!("auto_rst"), user);
-    env.events()
-        .publish(topics, (amount, env.ledger().sequence()));
+        .publish(topics, (count_merged, total_amount, env.ledger().sequence()));
 }
