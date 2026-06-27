@@ -227,8 +227,10 @@ pub fn position_transferred_with_rewards(
     ledger: u32,
 ) {
     let topics = (symbol_short!("pos_xf_rw"), from);
-    env.events()
-        .publish(topics, (to.clone(), amount, pending_reward_estimate, ledger));
+    env.events().publish(
+        topics,
+        (to.clone(), amount, pending_reward_estimate, ledger),
+    );
 }
 
 pub fn campaign_started(env: &Env, admin: &Address, multiplier_bps: u32, ends_at_ledger: u32) {
@@ -310,8 +312,18 @@ pub fn auto_paused(env: &Env, reward_balance: i128, threshold: i128) {
 // ── Issue #130: KYC status changed event ──────────────────────────────────────
 
 /// Emitted for each address updated by bulk_set_kyc.
+#[allow(dead_code)]
 pub fn kyc_status_changed(env: &Env, user: &Address, approved: bool) {
     let topics = (symbol_short!("kyc_chg"), user);
     env.events()
         .publish(topics, (approved, env.ledger().sequence()));
+}
+
+// ── Issue #113: auto-restake event ────────────────────────────────────────────
+
+/// Emitted when rewards are automatically restaked into a user's position.
+pub fn auto_restaked(env: &Env, user: &Address, amount: i128) {
+    let topics = (symbol_short!("auto_rst"), user);
+    env.events()
+        .publish(topics, (amount, env.ledger().sequence()));
 }
