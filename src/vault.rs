@@ -2280,6 +2280,9 @@ impl VaultContract {
         events::withdraw(env, staker, shares, amount_returned);
         balance::set_last_updated_ledger(env, env.ledger().sequence()); // Issue #69
 
+        // Issue #129: auto-pause if reward balance drops below threshold
+        Self::check_auto_pause(env)?;
+
         Ok(amount_returned)
     }
 
@@ -2788,6 +2791,36 @@ impl VaultContract {
         }
     }
 
+    /// Issue #129: check if reward balance dropped below threshold and auto-pause if needed.
+    fn check_auto_pause(env: &Env) -> Result<(), VaultError> {
+        let threshold_key = soroban_sdk::symbol_short!("rwd_thr");
+        let threshold: i128 = env
+            .storage()
+            .instance()
+            .get(&threshold_key)
+            .unwrap_or(0);
+        
+        if threshold == 0 {
+            return Ok(()); // Auto-pause disabled
+        }
+
+        let token_addr: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .ok_or(VaultError::NotInitialized)?;
+        
+        let token_client = token::Client::new(env, &token_addr);
+        let reward_balance = token_client.balance(&env.current_contract_address());
+
+        if reward_balance < threshold {
+            env.storage().instance().set(&DataKey::Paused, &true);
+            events::auto_paused(env, reward_balance, threshold);
+        }
+
+        Ok(())
+    }
+
     /// Append one entry to the user's stake/unstake history ring buffer (max 5).
     fn append_stake_history(env: &Env, user: &Address, action: StakeAction, amount: i128) {
         // Uses a tuple key to avoid collision with DataKey::StakeHistory used for
@@ -2864,6 +2897,9 @@ impl VaultContract {
 
         events::claimed(env, staker, reward);
         balance::set_last_updated_ledger(env, env.ledger().sequence()); // Issue #69
+
+        // Issue #129: auto-pause if reward balance drops below threshold
+        Self::check_auto_pause(env)?;
 
         Ok(reward)
     }
