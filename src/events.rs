@@ -315,3 +315,49 @@ pub fn kyc_status_changed(env: &Env, user: &Address, approved: bool) {
     env.events()
         .publish(topics, (approved, env.ledger().sequence()));
 }
+
+// ── Issue #118: relayer approval events ───────────────────────────────────────
+
+/// Emitted when a user approves a relayer.
+pub fn relayer_approved(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_set"), user);
+    env.events()
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when a user revokes a relayer.
+pub fn relayer_revoked(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_rev"), user);
+    env.events()
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when a relayer claims rewards on behalf of a user.
+pub fn claimed_on_behalf(env: &Env, relayer: &Address, user: &Address, reward: i128) {
+    let topics = (symbol_short!("claimed"), user);
+    env.events()
+        .publish(topics, (reward, relayer.clone(), env.ledger().sequence()));
+}
+
+// ── Issue #126: yield source events ───────────────────────────────────────────
+
+/// Emitted when a yield source notifies the contract of a new reward deposit.
+pub fn reward_added(env: &Env, source: &Address, amount: i128) {
+    let topics = (symbol_short!("rwd_add"), source);
+    env.events()
+        .publish(topics, (amount, env.ledger().sequence()));
+}
+
+/// Emitted when admin adds an address to the yield source whitelist.
+pub fn yield_source_added(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_add"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when admin removes an address from the yield source whitelist.
+pub fn yield_source_removed(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_rem"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
+}
