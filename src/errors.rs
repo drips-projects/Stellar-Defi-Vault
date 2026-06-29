@@ -141,6 +141,9 @@ pub enum VaultError {
     /// Caller is not on the yield source whitelist (issue #126).
     NotYieldSource = 46,
     /// notify_reward_added called with a zero or negative amount (issue #126).
+    InvalidRewardAmount = 43,
+    /// Returned when a new stake is attempted after `start_graceful_shutdown` has been called.
+    PoolShuttingDown = 45,
     InvalidRewardAmount = 47,
     /// Reverts with NotInEpochMode error if pool is not configured for epoch mode.
     NotInEpochMode = 48,

@@ -57,6 +57,8 @@ pub enum DataKey {
     KycRequired,
     KycApproved(Address),
     Stopped,
+    ShuttingDown,
+    FirstStakedAt(Address),
     // Task 2: Vesting
     VestingPeriod,
     VestingEntries(Address),
@@ -238,6 +240,49 @@ pub struct ChangelogEntry {
     pub change_type: String,
     pub old_value: i128,
     pub new_value: i128,
+}
+
+/// One entry in the rich reward-rate history exposed by `get_reward_rate_history` (issue #124).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateHistoryEntry {
+    pub old_rate_bps: i128,
+    pub new_rate_bps: i128,
+    pub changed_at_ledger: u32,
+    pub changed_by: Address,
+}
+
+/// Accumulated referral stats stored per referrer.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferralStats {
+    pub total_referred_stake: i128,
+    pub referral_count: u32,
+}
+
+/// One entry in the referral leaderboard returned by `referral_leaderboard`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferralLeaderboardEntry {
+    pub referrer: Address,
+    pub total_referred_stake: i128,
+    pub referral_count: u32,
+}
+
+/// Comprehensive health snapshot of the pool returned by `pool_health_report`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoolHealthReport {
+    pub reward_token_balance: i128,
+    pub total_staked: i128,
+    pub total_stakers: u32,
+    pub total_rewards_paid: i128,
+    pub reward_rate_bps: i128,
+    pub is_paused: bool,
+    pub is_stopped: bool,
+    pub uptime_ledgers: u32,
+    pub estimated_daily_obligations: i128,
+    pub is_solvent_7_days: bool,
 }
 
 /// Aggregate score used by `staking_efficiency_score`.

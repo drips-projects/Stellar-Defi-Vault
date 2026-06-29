@@ -7,6 +7,10 @@ use crate::{
     nft::StakeReceiptNFTClient,
     storage::{
         CampaignInfo, ChangelogEntry, ClaimWindow, ContractMetadata, DataKey, InterfaceId,
+        LeaderboardEntry, PoolConfig, PoolHealthReport, PoolStats, RateHistoryEntry,
+        ReferralLeaderboardEntry, StakeAction, StakeHistoryEntry, StakePosition, StakeStreak,
+        StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
+        VestingEntry, EpochState,
         LeaderboardEntry, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
         StakeStreak, StakingEfficiencyScore, TotalStakedSnapshot, UnbondingPosition,
         UnstakeCheckResult, UserStats, UserSummary, VestingEntry, EpochState,
@@ -575,6 +579,14 @@ impl VaultContract {
         let amount_removed =
             balance::shares_to_amount(total_shares, total_deposited, shares_to_remove)
                 .ok_or(VaultError::ArithmeticError)?;
+
+        // Referral tracking: keep total_referred_stake in sync with actual stake.
+        if let Some(referrer) = balance::get_referrer_of(&env, &user) {
+            let mut stats = balance::get_referral_stats(&env, &referrer);
+            stats.total_referred_stake =
+                stats.total_referred_stake.saturating_sub(amount_removed);
+            balance::set_referral_stats(&env, &referrer, &stats);
+        }
 
         // update user shares and totals immediately; funds remain in contract until execute_unstake
         let new_user_shares = user_shares - shares_to_remove;
@@ -2239,6 +2251,7 @@ impl VaultContract {
     fn do_stake(env: &Env, staker: &Address, amount: i128) -> Result<i128, VaultError> {
         staker.require_auth();
         Self::require_not_stopped(env)?;
+        Self::require_not_shutting_down(env)?;
         Self::require_not_paused(env)?;
 
         // If whitelist is enabled, reject non-whitelisted stakers. Existing stakers can still unstake/claim.
@@ -2343,6 +2356,16 @@ impl VaultContract {
             env.storage()
                 .persistent()
                 .set(&DataKey::StakedAtLedger(staker.clone()), &current_ledger);
+            // Write-once: record the very first time this address ever staked.
+            if !env
+                .storage()
+                .persistent()
+                .has(&DataKey::FirstStakedAt(staker.clone()))
+            {
+                env.storage()
+                    .persistent()
+                    .set(&DataKey::FirstStakedAt(staker.clone()), &current_ledger);
+            }
             balance::set_last_claim_ledger(env, staker, current_ledger);
             let total_stakers = balance::get_total_stakers(env);
             balance::set_total_stakers(env, total_stakers + 1);
@@ -2426,6 +2449,14 @@ impl VaultContract {
 
         let amount = balance::shares_to_amount(total_shares, total_deposited, shares)
             .ok_or(VaultError::ArithmeticError)?;
+
+        // Referral tracking: decrease referrer's total_referred_stake by the
+        // gross unstaked amount so the leaderboard stays accurate.
+        if let Some(referrer) = balance::get_referrer_of(env, staker) {
+            let mut stats = balance::get_referral_stats(env, &referrer);
+            stats.total_referred_stake = stats.total_referred_stake.saturating_sub(amount);
+            balance::set_referral_stats(env, &referrer, &stats);
+        }
 
         let token_addr = Self::token_address(&env)?;
 
@@ -3108,6 +3139,20 @@ impl VaultContract {
         }
     }
 
+    /// Returns `PoolShuttingDown` if graceful shutdown has been initiated.
+    fn require_not_shutting_down(env: &Env) -> Result<(), VaultError> {
+        let shutting_down: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::ShuttingDown)
+            .unwrap_or(false);
+        if shutting_down {
+            Err(VaultError::PoolShuttingDown)
+        } else {
+            Ok(())
+        }
+    }
+
     /// Issue #129: check if reward balance dropped below threshold and auto-pause if needed.
     fn check_auto_pause(env: &Env) -> Result<(), VaultError> {
         let threshold_key = soroban_sdk::symbol_short!("rwd_thr");
@@ -3253,6 +3298,7 @@ impl VaultContract {
     /// have already authenticated the staker.
     fn do_stake_inner(env: &Env, staker: &Address, amount: i128) -> Result<i128, VaultError> {
         Self::require_not_stopped(env)?;
+        Self::require_not_shutting_down(env)?;
         Self::require_not_paused(env)?;
 
         let whitelist_enabled: bool = env
@@ -4104,6 +4150,49 @@ impl VaultContract {
             .unwrap_or(false)
     }
 
+    /// Begin graceful shutdown — new stakes are blocked immediately, but
+    /// existing stakers may still `unstake`, `claim`, and `withdraw_vested`.
+    ///
+    /// **This action is irreversible.** Once triggered, no new principal can
+    /// enter the pool. Graceful shutdown is distinct from `emergency_stop`
+    /// (which also blocks unstake/claim) and from `pause` (which is
+    /// reversible). Both graceful shutdown and pause can be active at the same
+    /// time without conflict.
+    ///
+    /// Emits the `shutdown_started` event. Admin only.
+    pub fn start_graceful_shutdown(env: Env) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+        env.storage().instance().set(&DataKey::ShuttingDown, &true);
+        let admin = admin::get_admin(&env)?;
+        events::shutdown_started(&env, &admin);
+        Ok(())
+    }
+
+    /// Returns `true` if graceful shutdown has been initiated.
+    ///
+    /// No auth required.
+    pub fn is_shutting_down(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::ShuttingDown)
+            .unwrap_or(false)
+    }
+
+    /// Returns the ledger sequence at which `user` first ever opened a staking
+    /// position, or `None` if the user has never staked.
+    ///
+    /// This value is write-once: it is recorded on the user's very first stake
+    /// and never updated on subsequent top-ups or re-entries after a full exit.
+    /// Contrast with `staked_at_ledger` inside `StakePosition`, which resets
+    /// every time the user opens a new position.
+    ///
+    /// No auth required.
+    pub fn staker_joined_at(env: Env, user: Address) -> Option<u32> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::FirstStakedAt(user))
+    }
+
     // ── Issue #98: can_unstake pre-flight check ────────────────────────────────
 
     /// Read-only pre-flight check that simulates whether an unstake of the given
@@ -4357,6 +4446,167 @@ impl VaultContract {
             longest_streak: 0,
             last_active_wave: 0,
         })
+    }
+
+    // ── Referral system ───────────────────────────────────────────────────────
+
+    /// Stake `amount` tokens on behalf of `staker`, crediting `referrer` with
+    /// the stake in the referral leaderboard.
+    ///
+    /// The referral relationship is recorded the first time only (first referrer
+    /// wins; subsequent calls with a different `referrer` value are silently
+    /// ignored and the original referrer receives the credit). Self-referral is
+    /// rejected with `InvalidAddress`. Behaves identically to `stake` in every
+    /// other respect.
+    pub fn stake_with_referral(
+        env: Env,
+        staker: Address,
+        amount: i128,
+        referrer: Address,
+    ) -> Result<i128, VaultError> {
+        if staker == referrer {
+            return Err(VaultError::InvalidAddress);
+        }
+
+        let shares = Self::do_stake(&env, &staker, amount)?;
+
+        let is_new_referral = balance::get_referrer_of(&env, &staker).is_none();
+
+        let effective_referrer = if is_new_referral {
+            balance::set_referrer_of(&env, &staker, &referrer);
+            // Register referrer in the global registry if not already present.
+            let mut registry = balance::get_referral_registry(&env);
+            let mut already_in = false;
+            let mut i = 0u32;
+            while i < registry.len() {
+                if registry.get(i).unwrap() == referrer {
+                    already_in = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !already_in {
+                registry.push_back(referrer.clone());
+                balance::set_referral_registry(&env, &registry);
+            }
+            referrer
+        } else {
+            balance::get_referrer_of(&env, &staker).unwrap()
+        };
+
+        let mut stats = balance::get_referral_stats(&env, &effective_referrer);
+        if is_new_referral {
+            stats.referral_count += 1;
+        }
+        stats.total_referred_stake = stats.total_referred_stake.saturating_add(amount);
+        balance::set_referral_stats(&env, &effective_referrer, &stats);
+
+        Ok(shares)
+    }
+
+    /// Returns the top 10 referrers sorted descending by `total_referred_stake`.
+    ///
+    /// Computed dynamically from the referral registry on every call — not
+    /// cached. `total_referred_stake` reflects the current live stake of all
+    /// users the referrer brought in (decreasing as they unstake). No auth
+    /// required.
+    pub fn referral_leaderboard(env: Env) -> Vec<ReferralLeaderboardEntry> {
+        const CAP: u32 = 10;
+        let registry = balance::get_referral_registry(&env);
+        let mut top: Vec<ReferralLeaderboardEntry> = Vec::new(&env);
+
+        let mut i = 0u32;
+        while i < registry.len() {
+            let referrer = registry.get(i).unwrap();
+            let stats = balance::get_referral_stats(&env, &referrer);
+            let stake = stats.total_referred_stake;
+
+            // Find insertion index in the descending-sorted top list.
+            let mut ins = top.len(); // default: append at end
+            let mut j = 0u32;
+            while j < top.len() {
+                if stake > top.get(j).unwrap().total_referred_stake {
+                    ins = j;
+                    break;
+                }
+                j += 1;
+            }
+
+            // Only include if the entry ranks within the top CAP.
+            if ins < CAP {
+                let entry = ReferralLeaderboardEntry {
+                    referrer,
+                    total_referred_stake: stake,
+                    referral_count: stats.referral_count,
+                };
+                // Rebuild the sorted vec with the new entry at `ins`.
+                let mut new_top: Vec<ReferralLeaderboardEntry> = Vec::new(&env);
+                let mut k = 0u32;
+                while k < ins {
+                    new_top.push_back(top.get(k).unwrap());
+                    k += 1;
+                }
+                new_top.push_back(entry);
+                k = ins;
+                while k < top.len() && new_top.len() < CAP {
+                    new_top.push_back(top.get(k).unwrap());
+                    k += 1;
+                }
+                top = new_top;
+            }
+
+            i += 1;
+        }
+
+        top
+    }
+
+    /// Return a comprehensive health snapshot of the pool in a single call.
+    ///
+    /// Aggregates solvency, activity, and configuration metrics from existing storage
+    /// keys without writing any new state. No auth required.
+    pub fn pool_health_report(env: Env) -> PoolHealthReport {
+        let reward_token_balance = balance::get_reward_pool_balance(&env);
+        let total_staked = balance::get_total_deposited(&env);
+        let total_stakers = balance::get_total_stakers(&env);
+        let total_rewards_paid = balance::get_total_rewards_paid(&env);
+        let reward_rate_bps = balance::get_reward_rate_bps(&env) as i128;
+        let is_paused = Self::paused(&env);
+        let is_stopped: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Stopped)
+            .unwrap_or(false);
+        let initialized_at =
+            balance::get_initialized_at_ledger(&env).unwrap_or(env.ledger().sequence());
+        let uptime_ledgers = env.ledger().sequence().saturating_sub(initialized_at);
+
+        // estimated_daily_obligations = total_staked * reward_rate_bps * LEDGERS_PER_DAY
+        //                               / (BPS_DENOMINATOR * LEDGERS_PER_YEAR)
+        let estimated_daily_obligations = total_staked
+            .checked_mul(reward_rate_bps)
+            .and_then(|v| v.checked_mul(LEDGERS_PER_DAY as i128))
+            .and_then(|v| v.checked_div(BOOST_BPS_BASE as i128))
+            .and_then(|v| v.checked_div(STELLAR_LEDGERS_PER_YEAR as i128))
+            .unwrap_or(0);
+
+        let is_solvent_7_days = estimated_daily_obligations
+            .checked_mul(7)
+            .map(|seven_days| reward_token_balance >= seven_days)
+            .unwrap_or(false);
+
+        PoolHealthReport {
+            reward_token_balance,
+            total_staked,
+            total_stakers,
+            total_rewards_paid,
+            reward_rate_bps,
+            is_paused,
+            is_stopped,
+            uptime_ledgers,
+            estimated_daily_obligations,
+            is_solvent_7_days,
+        }
     }
 
     /// Consolidate multiple staking positions into a single position.

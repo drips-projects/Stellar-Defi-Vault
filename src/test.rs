@@ -10,10 +10,10 @@ use soroban_sdk::{
 use crate::{
     errors::VaultError,
     nft::{StakeReceiptNFT, StakeReceiptNFTClient},
-    storage::{ChangelogEntry, UnstakeCheckResult},
+    storage::{ChangelogEntry, PoolHealthReport, ReferralLeaderboardEntry, UnstakeCheckResult},
     vault::{
         VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_DESCRIPTION, CONTRACT_NAME,
-        CONTRACT_VERSION, MAX_CHANGELOG_ENTRIES, STELLAR_LEDGERS_PER_YEAR,
+        CONTRACT_VERSION, LEDGERS_PER_DAY, MAX_CHANGELOG_ENTRIES, STELLAR_LEDGERS_PER_YEAR,
     },
 };
 
@@ -3858,6 +3858,211 @@ fn test_notify_reward_added_fails_for_zero_amount() {
     assert!(result.is_err());
 }
 
+// ── pool_health_report ────────────────────────────────────────────────────────
+
+#[test]
+fn test_pool_health_report() {
+    let f = VaultFixture::new();
+
+    let stake_amount: i128 = 10_000_000;
+    let reward_fund: i128 = 100_000_000;
+    let rate_bps: u32 = 500;
+
+    f.token_admin.mint(&f.admin, &reward_fund);
+    f.vault.set_reward_rate_bps(&rate_bps);
+    f.vault.fund_reward_pool(&f.admin, &reward_fund);
+    f.vault.stake(&f.alice, &stake_amount);
+
+    let report: PoolHealthReport = f.vault.pool_health_report();
+
+    assert_eq!(report.reward_token_balance, reward_fund);
+    assert_eq!(report.total_staked, stake_amount);
+    assert_eq!(report.total_stakers, 1);
+    assert_eq!(report.total_rewards_paid, 0);
+    assert_eq!(report.reward_rate_bps, rate_bps as i128);
+    assert!(!report.is_paused);
+    assert!(!report.is_stopped);
+
+    // estimated_daily_obligations = stake_amount * rate_bps * LEDGERS_PER_DAY
+    //                               / (BPS_DENOMINATOR * LEDGERS_PER_YEAR)
+    let expected_daily: i128 = stake_amount * rate_bps as i128
+        * LEDGERS_PER_DAY as i128
+        / (10_000 * STELLAR_LEDGERS_PER_YEAR as i128);
+    assert_eq!(report.estimated_daily_obligations, expected_daily);
+
+    // reward_fund >> 7 * expected_daily, so pool must be solvent for 7 days
+    assert!(report.is_solvent_7_days);
+
+    // Pause the pool and verify is_paused is reflected
+    f.vault.pause();
+    let paused_report: PoolHealthReport = f.vault.pool_health_report();
+    assert!(paused_report.is_paused);
+    assert!(!paused_report.is_stopped);
+}
+
+// ── referral_leaderboard ──────────────────────────────────────────────────────
+
+#[test]
+fn test_referral_single_referrer_appears_correctly() {
+    let f = VaultFixture::new();
+    let referrer = Address::generate(&f.env);
+    let stake_amount: i128 = 5_000_000;
+
+    f.vault.stake_with_referral(&f.alice, &stake_amount, &referrer);
+
+    let board: soroban_sdk::Vec<ReferralLeaderboardEntry> = f.vault.referral_leaderboard();
+    assert_eq!(board.len(), 1);
+    let entry = board.get(0).unwrap();
+    assert_eq!(entry.referrer, referrer);
+    assert_eq!(entry.total_referred_stake, stake_amount);
+    assert_eq!(entry.referral_count, 1);
+}
+
+#[test]
+fn test_referral_top_referrer_ranked_first() {
+    let f = VaultFixture::new();
+    let referrer_a = Address::generate(&f.env);
+    let referrer_b = Address::generate(&f.env);
+
+    // alice stakes a small amount via referrer_a
+    f.vault.stake_with_referral(&f.alice, &1_000_000_i128, &referrer_a);
+    // bob stakes a larger amount via referrer_b — should rank first
+    f.vault.stake_with_referral(&f.bob, &10_000_000_i128, &referrer_b);
+
+    let board: soroban_sdk::Vec<ReferralLeaderboardEntry> = f.vault.referral_leaderboard();
+    assert_eq!(board.len(), 2);
+    assert_eq!(board.get(0).unwrap().referrer, referrer_b);
+    assert_eq!(board.get(0).unwrap().total_referred_stake, 10_000_000);
+    assert_eq!(board.get(1).unwrap().referrer, referrer_a);
+    assert_eq!(board.get(1).unwrap().total_referred_stake, 1_000_000);
+}
+
+#[test]
+fn test_referral_stats_decrease_on_referred_unstake() {
+    let f = VaultFixture::new();
+    let referrer = Address::generate(&f.env);
+    let stake_amount: i128 = 8_000_000;
+
+    f.vault.stake_with_referral(&f.alice, &stake_amount, &referrer);
+
+    // Unstake all shares — total_referred_stake must drop back to 0
+    let shares = f.vault.shares_of(&f.alice);
+    f.vault.unstake(&f.alice, &shares);
+
+    let board: soroban_sdk::Vec<ReferralLeaderboardEntry> = f.vault.referral_leaderboard();
+    assert_eq!(board.len(), 1);
+    assert_eq!(board.get(0).unwrap().total_referred_stake, 0);
+}
+
+#[test]
+fn test_referral_leaderboard_capped_at_10() {
+    let f = VaultFixture::new();
+    // 12 unique staker–referrer pairs; each staker only appears once so the
+    // first-referrer-wins rule does not interfere.
+    let mut i = 0u32;
+    while i < 12 {
+        let staker = Address::generate(&f.env);
+        let referrer = Address::generate(&f.env);
+        f.token_admin.mint(&staker, &1_000_000);
+        f.vault.stake_with_referral(&staker, &1_000_000_i128, &referrer);
+        i += 1;
+    }
+
+    let board: soroban_sdk::Vec<ReferralLeaderboardEntry> = f.vault.referral_leaderboard();
+    assert_eq!(board.len(), 10, "leaderboard must be capped at 10 entries");
+}
+
+// ── graceful_shutdown tests ───────────────────────────────────────────────────
+
+#[test]
+fn test_graceful_shutdown_blocks_new_stakes() {
+    let f = VaultFixture::new();
+    // Alice stakes successfully before shutdown.
+    f.vault.stake(&f.alice, &1_000_000);
+
+    f.vault.start_graceful_shutdown(&f.admin);
+
+    assert!(f.vault.is_shutting_down());
+
+    // New stake from bob must be rejected.
+    let result = f.vault.try_stake(&f.bob, &1_000_000);
+    assert_eq!(result, Err(Ok(VaultError::PoolShuttingDown)));
+}
+
+#[test]
+fn test_graceful_shutdown_existing_stakers_can_exit() {
+    let f = VaultFixture::new();
+    f.vault.stake(&f.alice, &1_000_000);
+
+    // Fund the reward pool so claim doesn't fail.
+    f.token_admin.mint(&f.admin, &100_000);
+    f.vault.fund_reward_pool(&f.admin, &100_000);
+
+    set_ledger(&f.env, 100_000);
+
+    f.vault.start_graceful_shutdown(&f.admin);
+
+    // Alice can still claim rewards.
+    let claimed = f.vault.claim(&f.alice);
+    assert!(claimed >= 0);
+
+    // Alice can still unstake.
+    f.vault.unstake(&f.alice, &1_000_000);
+}
+
+#[test]
+fn test_graceful_shutdown_is_irreversible() {
+    let f = VaultFixture::new();
+    f.vault.start_graceful_shutdown(&f.admin);
+
+    // There is no reverse operation; flag must remain true.
+    assert!(f.vault.is_shutting_down());
+
+    // A second call is idempotent and does not panic.
+    f.vault.start_graceful_shutdown(&f.admin);
+    assert!(f.vault.is_shutting_down());
+}
+
+#[test]
+fn test_graceful_shutdown_non_admin_rejected() {
+    let f = VaultFixture::new();
+
+    let result = f.vault.try_start_graceful_shutdown(&f.alice);
+    assert!(result.is_err());
+    assert!(!f.vault.is_shutting_down());
+}
+
+// ── staker_joined_at tests ────────────────────────────────────────────────────
+
+#[test]
+fn test_staker_joined_at_records_first_stake_ledger() {
+    let f = VaultFixture::new();
+    set_ledger(&f.env, 500);
+    f.vault.stake(&f.alice, &1_000_000);
+    assert_eq!(f.vault.staker_joined_at(&f.alice), Some(500));
+}
+
+#[test]
+fn test_staker_joined_at_not_overwritten_after_full_exit_and_reentry() {
+    let f = VaultFixture::new();
+    set_ledger(&f.env, 200);
+    f.vault.stake(&f.alice, &1_000_000);
+
+    // Full exit.
+    f.vault.unstake(&f.alice, &1_000_000);
+
+    // Re-enter at a much later ledger.
+    set_ledger(&f.env, 10_000);
+    f.vault.stake(&f.alice, &500_000);
+
+    // Original join ledger must be preserved.
+    assert_eq!(f.vault.staker_joined_at(&f.alice), Some(200));
+}
+
+#[test]
+fn test_staker_joined_at_returns_none_for_never_staked() {
+    let f = VaultFixture::new();
+    assert_eq!(f.vault.staker_joined_at(&f.bob), None);
 #[test]
 fn test_get_next_epoch_start_not_in_epoch_mode() {
     let f = VaultFixture::new();

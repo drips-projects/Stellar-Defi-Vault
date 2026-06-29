@@ -1,3 +1,6 @@
+use crate::storage::{
+    ChangelogEntry, ClaimWindow, DataKey, RateHistoryEntry, ReferralStats, VestingEntry,
+};
 use crate::storage::{ChangelogEntry, ClaimWindow, DataKey, RateHistoryEntry, TotalStakedSnapshot, VestingEntry};
 use soroban_sdk::{symbol_short, Address, Env, Symbol, Vec};
 
@@ -647,6 +650,64 @@ pub fn set_auto_restake(env: &Env, user: &Address, enabled: bool) {
     env.storage().persistent().set(&key, &enabled);
 }
 
+// ── Issue #124: rich reward-rate history ─────────────────────────────────────
+// Key "rwd_rth" stored in instance storage.
+
+pub const MAX_RICH_RATE_HISTORY: u32 = 20;
+
+pub fn get_reward_rate_history(env: &Env) -> Vec<RateHistoryEntry> {
+    env.storage()
+        .instance()
+        .get(&symbol_short!("rwd_rth"))
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn set_reward_rate_history(env: &Env, history: &Vec<RateHistoryEntry>) {
+    env.storage()
+        .instance()
+        .set(&symbol_short!("rwd_rth"), history);
+}
+
+// ── Referral system ───────────────────────────────────────────────────────────
+// Tuple-keyed persistent storage to avoid growing the DataKey enum.
+
+pub fn get_referrer_of(env: &Env, user: &Address) -> Option<Address> {
+    let key = (Symbol::new(env, "ref_of"), user.clone());
+    env.storage().persistent().get(&key)
+}
+
+pub fn set_referrer_of(env: &Env, user: &Address, referrer: &Address) {
+    let key = (Symbol::new(env, "ref_of"), user.clone());
+    env.storage().persistent().set(&key, referrer);
+}
+
+pub fn get_referral_stats(env: &Env, referrer: &Address) -> ReferralStats {
+    let key = (Symbol::new(env, "ref_st"), referrer.clone());
+    env.storage()
+        .persistent()
+        .get(&key)
+        .unwrap_or(ReferralStats {
+            total_referred_stake: 0,
+            referral_count: 0,
+        })
+}
+
+pub fn set_referral_stats(env: &Env, referrer: &Address, stats: &ReferralStats) {
+    let key = (Symbol::new(env, "ref_st"), referrer.clone());
+    env.storage().persistent().set(&key, stats);
+}
+
+pub fn get_referral_registry(env: &Env) -> Vec<Address> {
+    env.storage()
+        .instance()
+        .get(&symbol_short!("ref_reg"))
+        .unwrap_or(Vec::new(env))
+}
+
+pub fn set_referral_registry(env: &Env, registry: &Vec<Address>) {
+    env.storage()
+        .instance()
+        .set(&symbol_short!("ref_reg"), registry);
 // ── Issue #118: relayer approval ─────────────────────────────────────────────
 pub fn get_approved_relayer(env: &Env, user: &Address) -> Option<Address> {
     let key = (Symbol::new(env, "app_rlyr"), user.clone());
