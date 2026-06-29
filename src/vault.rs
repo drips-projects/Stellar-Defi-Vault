@@ -11,6 +11,9 @@ use crate::{
         ReferralLeaderboardEntry, StakeAction, StakeHistoryEntry, StakePosition, StakeStreak,
         StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
         VestingEntry, EpochState,
+        LeaderboardEntry, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
+        StakeStreak, StakingEfficiencyScore, TotalStakedSnapshot, UnbondingPosition,
+        UnstakeCheckResult, UserStats, UserSummary, VestingEntry, EpochState,
     },
 };
 
@@ -30,6 +33,8 @@ pub(crate) const STELLAR_LEDGERS_PER_YEAR: u32 = 6_307_200;
 pub(crate) const MAX_UNSTAKE_FEE_BPS: u32 = 500;
 /// Approximate number of Stellar ledgers in one day at 5 s/ledger (issue #133).
 pub(crate) const LEDGERS_PER_DAY: u32 = 17_280;
+/// Days of runway below which a refill alert is emitted.
+pub(crate) const REFILL_ALERT_DAYS: u32 = 30;
 
 #[contract]
 pub struct VaultContract;
@@ -1093,6 +1098,53 @@ impl VaultContract {
         ))
     }
 
+    /// Read-only: returns how far a user is toward the next boost tier.
+    ///
+    /// Computes the user's elapsed staking ledgers and walks the boost schedule
+    /// to find which tier they currently qualify for and how many ledgers remain
+    /// until the next one.  No auth required.
+    pub fn get_boost_tier_progress(env: Env, user: Address) -> BoostTierProgress {
+        let schedule = balance::get_boost_schedule(&env).unwrap_or(Vec::new(&env));
+        let current_ledger = env.ledger().sequence();
+
+        let staked_at: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::StakedAtLedger(user.clone()))
+            .unwrap_or(current_ledger);
+
+        let elapsed = current_ledger.saturating_sub(staked_at);
+
+        // Walk tiers to find which one the user currently qualifies for
+        let mut current_tier: u32 = 0;
+        let mut current_multiplier_bps: i128 = BOOST_BPS_BASE as i128;
+        let mut next_tier_in_ledgers: Option<u32> = None;
+        let mut next_multiplier_bps: Option<i128> = None;
+
+        let mut i: u32 = 0;
+        while i < schedule.len() {
+            let (tier_threshold, tier_mult) = schedule.get(i).unwrap();
+            if elapsed >= tier_threshold {
+                // User has crossed this tier
+                current_tier = i + 1;
+                current_multiplier_bps = tier_mult as i128;
+            } else {
+                // This is the next tier the user hasn't reached yet
+                next_tier_in_ledgers = Some(tier_threshold.saturating_sub(elapsed));
+                next_multiplier_bps = Some(tier_mult as i128);
+                break;
+            }
+            i += 1;
+        }
+
+        BoostTierProgress {
+            current_tier,
+            current_multiplier_bps,
+            next_tier_in_ledgers,
+            next_multiplier_bps,
+        }
+    }
+
     // --- Issue #39: rescue stuck tokens ---
 
     /// Admin: register a separate reward token address (distinct from the stake token).
@@ -1638,13 +1690,33 @@ impl VaultContract {
             return 0;
         }
 
-        position
+        let raw = position
             .amount
             .checked_mul(rate_bps as i128)
             .and_then(|v| v.checked_mul(LEDGERS_PER_DAY as i128))
             .and_then(|v| v.checked_div(BOOST_BPS_BASE as i128))
             .and_then(|v| v.checked_div(STELLAR_LEDGERS_PER_YEAR as i128))
-            .unwrap_or(0)
+            .unwrap_or(0);
+        Self::normalize_to_reward_decimals(&env, raw).unwrap_or(raw)
+    }
+
+    /// Estimated annual reward for the user at the current APR, normalized to reward
+    /// token decimals. Returns 0 when there is no position or rate is 0.
+    pub fn get_estimated_annual_reward(env: Env, user: Address) -> i128 {
+        let position = match Self::build_position(&env, &user).ok().flatten() {
+            Some(p) => p,
+            None => return 0,
+        };
+        let rate_bps = balance::get_reward_rate_bps(&env);
+        if rate_bps == 0 {
+            return 0;
+        }
+        let raw = position
+            .amount
+            .checked_mul(rate_bps as i128)
+            .and_then(|v| v.checked_div(BOOST_BPS_BASE as i128))
+            .unwrap_or(0);
+        Self::normalize_to_reward_decimals(&env, raw).unwrap_or(raw)
     }
 
     // --- Boost campaign (#48) ---
@@ -3211,6 +3283,9 @@ impl VaultContract {
         // Issue #129: auto-pause if reward balance drops below threshold
         Self::check_auto_pause(env)?;
 
+        // Reward refill alert: emit if runway < 30 days, rate-limited to once per day
+        Self::check_refill_alert(env);
+
         Ok(reward)
     }
 
@@ -3943,7 +4018,7 @@ impl VaultContract {
             &(current_epoch_state.epoch_number - 1),
         );
 
-        events::claimed(&env, &user, total_accumulated);
+        events::claimed(&env, &user, total_accumulated, env.ledger().sequence());
         Ok(total_accumulated)
     }
 
@@ -3952,6 +4027,37 @@ impl VaultContract {
             .instance()
             .get(&DataKey::CurrentEpoch)
             .ok_or(VaultError::NotInitialized)
+    }
+
+    pub fn get_next_epoch_start(env: Env) -> Result<u32, VaultError> {
+        let is_epoch_mode = env
+            .storage()
+            .instance()
+            .get(&DataKey::EpochMode)
+            .unwrap_or(false);
+        if !is_epoch_mode {
+            return Err(VaultError::NotInEpochMode);
+        }
+
+        let state: EpochState = env
+            .storage()
+            .instance()
+            .get(&DataKey::CurrentEpoch)
+            .ok_or(VaultError::NotInitialized)?;
+
+        let epoch_ledgers = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::EpochLedgers)
+            .unwrap_or(0);
+
+        Ok(state.started_at.saturating_add(epoch_ledgers))
+    }
+
+    pub fn ledgers_until_next_epoch(env: Env) -> Result<u32, VaultError> {
+        let next_start = Self::get_next_epoch_start(env.clone())?;
+        let current_ledger = env.ledger().sequence();
+        Ok(next_start.saturating_sub(current_ledger))
     }
 
     // ── Issue #104: interface detection ──────────────────────────────────────
@@ -4534,6 +4640,86 @@ impl VaultContract {
         events::positions_merged(&env, &user, 1, total_amount);
 
         Ok(())
+    }
+
+    // ── Issue #118: relayer approval ─────────────────────────────────────────────
+
+    pub fn approve_relayer(env: Env, user: Address, relayer: Address) {
+        user.require_auth();
+        balance::set_approved_relayer(&env, &user, &relayer);
+        events::relayer_approved(&env, &user, &relayer);
+    }
+
+    pub fn revoke_relayer(env: Env, user: Address, relayer: Address) {
+        user.require_auth();
+        if let Some(existing) = balance::get_approved_relayer(&env, &user) {
+            if existing == relayer {
+                balance::remove_approved_relayer(&env, &user);
+                events::relayer_revoked(&env, &user, &relayer);
+            }
+        }
+    }
+
+    pub fn is_approved_relayer(env: Env, user: Address, relayer: Address) -> bool {
+        if let Some(existing) = balance::get_approved_relayer(&env, &user) {
+            existing == relayer
+        } else {
+            false
+        }
+    }
+
+    pub fn claim_on_behalf(env: Env, relayer: Address, user: Address) -> Result<i128, VaultError> {
+        relayer.require_auth();
+
+        if !Self::is_approved_relayer(env.clone(), user.clone(), relayer.clone()) {
+            return Err(VaultError::RelayerNotApproved);
+        }
+
+        let reward = Self::do_claim(&env, &user)?;
+        events::claimed_on_behalf(&env, &relayer, &user, reward);
+        Ok(reward)
+    }
+
+    // ── Issue #126: yield source whitelist and reward notification ────────────
+
+    pub fn add_yield_source(env: Env, source: Address) -> Result<(), VaultError> {
+        let admin = admin::get_admin(&env)?;
+        admin.require_auth();
+        balance::set_yield_source(&env, &source, true);
+        events::yield_source_added(&env, &admin, &source);
+        Ok(())
+    }
+
+    pub fn remove_yield_source(env: Env, source: Address) -> Result<(), VaultError> {
+        let admin = admin::get_admin(&env)?;
+        admin.require_auth();
+        balance::set_yield_source(&env, &source, false);
+        events::yield_source_removed(&env, &admin, &source);
+        Ok(())
+    }
+
+    pub fn is_yield_source(env: Env, source: Address) -> bool {
+        balance::is_yield_source(&env, &source)
+    }
+
+    pub fn notify_reward_added(env: Env, caller: Address, amount: i128) -> Result<(), VaultError> {
+        caller.require_auth();
+
+        if !balance::is_yield_source(&env, &caller) {
+            return Err(VaultError::NotYieldSource);
+        }
+        if amount <= 0 {
+            return Err(VaultError::InvalidRewardAmount);
+        }
+
+        let new_total = balance::get_total_rewards_added(&env).saturating_add(amount);
+        balance::set_total_rewards_added(&env, new_total);
+        events::reward_added(&env, &caller, amount);
+        Ok(())
+    }
+
+    pub fn get_total_rewards_added(env: Env) -> i128 {
+        balance::get_total_rewards_added(&env)
     }
 
 }
