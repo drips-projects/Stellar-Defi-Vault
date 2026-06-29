@@ -4049,4 +4049,37 @@ impl VaultContract {
             balance::get_initialized_at_ledger(&env).ok_or(VaultError::NotInitialized)?;
         Ok(env.ledger().sequence().saturating_sub(initialized_at))
     }
+
+    // ── Custom error messages (frontend metadata) ────────────────────────────
+
+    /// Admin: set a custom human-readable message for a specific error code.
+    ///
+    /// This is purely a metadata layer for frontends to display friendly error
+    /// messages. It does not change contract error behavior. Error codes
+    /// correspond to `VaultError` repr values (e.g., `VaultPaused = 6`).
+    ///
+    /// - Maximum message length: 150 characters (reverts with `MessageTooLong`)
+    /// - Maximum stored messages: 20 (oldest overwritten when exceeded)
+    /// - Admin auth required
+    ///
+    /// Returns `Ok(())` on success.
+    pub fn set_error_message(env: Env, error_code: u32, message: String) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
+
+        // Validate message length
+        if message.len() as u32 > balance::MAX_ERROR_MESSAGE_LENGTH {
+            return Err(VaultError::MessageTooLong);
+        }
+
+        balance::set_error_message(&env, error_code, &message);
+        Ok(())
+    }
+
+    /// Read-only: get the custom error message for a specific error code.
+    ///
+    /// Returns `None` if no custom message has been set for this error code.
+    /// No auth required.
+    pub fn get_error_message(env: Env, error_code: u32) -> Option<String> {
+        balance::get_error_message(&env, error_code)
+    }
 }

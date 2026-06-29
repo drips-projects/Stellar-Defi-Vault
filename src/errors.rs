@@ -67,4 +67,6 @@ pub enum VaultError {
     BatchKycTooLarge = 39,
     /// Caller-supplied exchange rate is zero or negative (issue #132).
     InvalidRate = 40,
+    /// Custom error message exceeds MAX_ERROR_MESSAGE_LENGTH (150 characters).
+    MessageTooLong = 41,
 }
