@@ -213,6 +213,25 @@ pub fn position_transferred(env: &Env, from: &Address, to: &Address, amount: i12
         .publish(topics, (to.clone(), amount, env.ledger().sequence()));
 }
 
+/// Emitted by `transfer_position_with_rewards` (issue #134).
+///
+/// `pending_reward_estimate` is the pending reward computed at transfer time —
+/// it is informational only; no settlement occurs.
+pub fn position_transferred_with_rewards(
+    env: &Env,
+    from: &Address,
+    to: &Address,
+    amount: i128,
+    pending_reward_estimate: i128,
+    ledger: u32,
+) {
+    let topics = (symbol_short!("pos_xf_rw"), from);
+    env.events().publish(
+        topics,
+        (to.clone(), amount, pending_reward_estimate, ledger),
+    );
+}
+
 pub fn campaign_started(env: &Env, admin: &Address, multiplier_bps: u32, ends_at_ledger: u32) {
     let topics = (symbol_short!("camp_on"), admin);
     env.events().publish(
@@ -278,4 +297,57 @@ pub fn description_updated(env: &Env, admin: &Address, description: &soroban_sdk
     let topics = (symbol_short!("desc_upd"), admin);
     env.events()
         .publish(topics, (description.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when a user merges their staking positions.
+pub fn positions_merged(env: &Env, user: &Address, count_merged: u32, total_amount: i128) {
+    let topics = (symbol_short!("merge"), user);
+    env.events()
+        .publish(topics, (count_merged, total_amount, env.ledger().sequence()));
+}
+
+// ── Issue #118: relayer approval events ───────────────────────────────────────
+
+/// Emitted when a user approves a relayer.
+pub fn relayer_approved(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_set"), user);
+    env.events()
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when a user revokes a relayer.
+pub fn relayer_revoked(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_rev"), user);
+    env.events()
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when a relayer claims rewards on behalf of a user.
+pub fn claimed_on_behalf(env: &Env, relayer: &Address, user: &Address, reward: i128) {
+    let topics = (symbol_short!("claimed"), user);
+    env.events()
+        .publish(topics, (reward, relayer.clone(), env.ledger().sequence()));
+}
+
+// ── Issue #126: yield source events ───────────────────────────────────────────
+
+/// Emitted when a yield source notifies the contract of a new reward deposit.
+pub fn reward_added(env: &Env, source: &Address, amount: i128) {
+    let topics = (symbol_short!("rwd_add"), source);
+    env.events()
+        .publish(topics, (amount, env.ledger().sequence()));
+}
+
+/// Emitted when admin adds an address to the yield source whitelist.
+pub fn yield_source_added(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_add"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when admin removes an address from the yield source whitelist.
+pub fn yield_source_removed(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_rem"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
 }

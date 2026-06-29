@@ -63,4 +63,14 @@ pub enum VaultError {
     MaxPositionsReached = 37,
     /// set_max_positions_per_user rejected because max exceeds 10.
     MaxPositionsTooHigh = 38,
+    /// bulk_set_kyc was called with more than 50 entries (issue #130).
+    BatchKycTooLarge = 39,
+    /// Caller-supplied exchange rate is zero or negative (issue #132).
+    InvalidRate = 40,
+    /// Caller is not an approved relayer for the target user (issue #118).
+    RelayerNotApproved = 41,
+    /// Caller is not on the yield source whitelist (issue #126).
+    NotYieldSource = 42,
+    /// notify_reward_added called with a zero or negative amount (issue #126).
+    InvalidRewardAmount = 43,
 }
