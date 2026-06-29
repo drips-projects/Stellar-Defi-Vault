@@ -4361,61 +4361,50 @@ impl VaultContract {
         Ok(())
     }
 
-    // ── Governance checkpoints: snapshot_total_staked ─────────────────────────────
+    // ── Issue #117: pool_uptime_ledgers ───────────────────────────────────────
 
-    /// Admin: record the current total staked as a governance checkpoint.
+    /// Read-only query for how many ledgers the pool has been active.
     ///
-    /// Appends a `TotalStakedSnapshot { total_staked, ledger }` to instance
-    /// storage.  The list is capped at 50 entries; if the cap is exceeded the
-    /// oldest entry is dropped.  Requires admin auth.
-    pub fn take_snapshot(env: Env) -> Result<(), VaultError> {
-        let admin = admin::get_admin(&env)?;
-        admin.require_auth();
+    /// Returns `current_ledger - initialized_at_ledger`. Approximate days:
+    /// `uptime_ledgers / 17280` (assuming ~5 s per ledger). Reverts with
+    /// `NotInitialized` if `initialize` has not been called. No auth required.
+    pub fn pool_uptime_ledgers(env: Env) -> Result<u32, VaultError> {
+        let initialized_at =
+            balance::get_initialized_at_ledger(&env).ok_or(VaultError::NotInitialized)?;
+        Ok(env.ledger().sequence().saturating_sub(initialized_at))
+    }
 
-        let current_ledger = env.ledger().sequence();
-        let total_staked = balance::get_total_deposited(&env);
+    // ── Custom error messages (frontend metadata) ────────────────────────────
 
-        let mut snapshots = balance::get_staked_snapshots(&env);
-        snapshots.push_back(TotalStakedSnapshot {
-            total_staked,
-            ledger: current_ledger,
-        });
+    /// Admin: set a custom human-readable message for a specific error code.
+    ///
+    /// This is purely a metadata layer for frontends to display friendly error
+    /// messages. It does not change contract error behavior. Error codes
+    /// correspond to `VaultError` repr values (e.g., `VaultPaused = 6`).
+    ///
+    /// - Maximum message length: 150 characters (reverts with `MessageTooLong`)
+    /// - Maximum stored messages: 20 (oldest overwritten when exceeded)
+    /// - Admin auth required
+    ///
+    /// Returns `Ok(())` on success.
+    pub fn set_error_message(env: Env, error_code: u32, message: String) -> Result<(), VaultError> {
+        admin::require_admin(&env)?;
 
-        while snapshots.len() > balance::MAX_STAKED_SNAPSHOTS {
-            snapshots.pop_front();
+        // Validate message length
+        if message.len() as u32 > balance::MAX_ERROR_MESSAGE_LENGTH {
+            return Err(VaultError::MessageTooLong);
         }
 
-        balance::set_staked_snapshots(&env, &snapshots);
+        balance::set_error_message(&env, error_code, &message);
         Ok(())
     }
 
-    /// Read-only: returns the nearest snapshot at or before `ledger`.
+    /// Read-only: get the custom error message for a specific error code.
     ///
-    /// Scans from the end (most recent) towards the front and returns the first
-    /// entry whose `ledger` field is ≤ the requested ledger.  Returns `None`
-    /// if no snapshot has been taken yet or all recorded ledgers are after the
-    /// requested one.
-    pub fn get_snapshot_at(env: Env, ledger: u32) -> Option<TotalStakedSnapshot> {
-        let snapshots = balance::get_staked_snapshots(&env);
-        let len = snapshots.len();
-        if len == 0 {
-            return None;
-        }
-        // Iterate from newest to oldest
-        let mut i = len;
-        while i > 0 {
-            i -= 1;
-            let snap = snapshots.get(i).unwrap();
-            if snap.ledger <= ledger {
-                return Some(snap);
-            }
-        }
-        None
-    }
-
-    /// Read-only: returns the full snapshot history, oldest first.
-    pub fn get_all_snapshots(env: Env) -> Vec<TotalStakedSnapshot> {
-        balance::get_staked_snapshots(&env)
+    /// Returns `None` if no custom message has been set for this error code.
+    /// No auth required.
+    pub fn get_error_message(env: Env, error_code: u32) -> Option<String> {
+        balance::get_error_message(&env, error_code)
     }
 
 }
