@@ -5,8 +5,7 @@ use soroban_sdk::{contracttype, Address, String, Vec};
 /// Instance keys (fast, small): Admin, Token, TotalShares, TotalDeposited,
 /// MinStake, RewardRateBps, RewardPoolBalance, BoostSchedule, Paused,
 /// WithdrawalLimit, LockPeriod, EarlyExitPenaltyBps, TotalStakers,
-/// TotalRewardsPaid, SlashTreasury, WhitelistEnabled, CooldownPeriod,
-/// PoolCap, ClaimCap, ClaimCapWindow, StakeDecimals, RewardDecimals,
+/// TotalRewardsPaid, WhitelistEnabled, CooldownPeriod,
 /// UnstakeFeeBps, AllStakers, InactivityThreshold, Changelog,
 /// LastRateChangeLedger, InitializedAtLedger.
 ///
@@ -38,30 +37,16 @@ pub enum DataKey {
     TotalStakers,
     TotalRewardsPaid,
     Delegate(Address),
-    // Issue #39: rescue token
-    RewardToken,
-    // Issue #40: NFT receipt
-    NftContract,
-    // Issue #41: restake grace window
-    RestakeWindow,
     LastUnstakeLedger(Address),
     Restaked(Address),
-    // Issue #42: admin action audit log
-    AdminActionCount,
-    // Keys used throughout vault.rs / balance.rs
-    SlashTreasury,
     WhitelistEnabled,
     Whitelisted(Address),
     CooldownPeriod,
     UnbondingPosition(Address),
     RewardRemainder(Address),
     UserClaimWindow(Address),
-    StakeDecimals,
-    RewardDecimals,
     UnstakeFeeBps,
     AllStakers,
-    ClaimCap,
-    ClaimCapWindow,
     RateHistory,
     BoostCampaign,
     Leaderboard,
@@ -72,7 +57,29 @@ pub enum DataKey {
     KycRequired,
     KycApproved(Address),
     Stopped,
-    PoolCap,
+    // Task 2: Vesting
+    VestingPeriod,
+    VestingEntries(Address),
+    // Task 3: Epoch Mode
+    EpochMode,
+    CurrentEpoch,
+    EpochLedgers,
+    EpochRewardPerEpoch,
+    EpochRewardFactor(u32),
+    UserEpochSnapshot(UserEpochSnapshotKey),
+    UserLastClaimedEpoch(Address),
+}
+
+/// Storage key for an individual epoch snapshot.
+///
+/// Soroban's enum contracttype support is stricter for tuple variants, so we
+/// keep the address and epoch together in a dedicated struct instead of a
+/// multi-field enum variant.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct UserEpochSnapshotKey {
+    pub user: Address,
+    pub epoch: u32,
 }
 
 /// Issue #42: enum of all admin actions for the audit log.
@@ -219,6 +226,24 @@ pub struct ClaimWindow {
     pub window_started_at: u32,
 }
 
+/// Single entry in the on-chain changelog exposed by `get_changelog`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ChangelogEntry {
+    pub change_type: String,
+    pub old_value: i128,
+    pub new_value: i128,
+}
+
+/// Aggregate score used by `staking_efficiency_score`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct StakingEfficiencyScore {
+    pub total_claimed: i128,
+    pub estimated_if_compounded: i128,
+    pub efficiency_bps: i128,
+}
+
 /// Aggregated user state returned by `user_summary` (issue #103).
 ///
 /// - `position`: 0 or 1 `StakePosition` entries; empty when user has no stake.
@@ -301,50 +326,18 @@ pub struct StakeStreak {
     pub last_active_wave: u32,
 }
 
-/// Staking efficiency score for a user (issue #135).
-///
-/// - `total_claimed`: cumulative rewards the user has actually claimed.
-/// - `estimated_if_compounded`: approximate total rewards if all claims had been
-///   immediately restaked (daily compounding, no boost multipliers). This is an
-///   integer-math approximation; see `staking_efficiency_score` for caveats.
-/// - `efficiency_bps`: `total_claimed * 10_000 / estimated_if_compounded`,
-///   capped at 10_000. Returns 0 when `estimated_if_compounded` is 0.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct StakingEfficiency {
-    pub total_claimed: i128,
-    pub estimated_if_compounded: i128,
-    pub efficiency_bps: i128,
-}
-
-// ── Issue #114: on-chain changelog ───────────────────────────────────────────
-
-/// One entry in the rolling admin configuration changelog (issue #114).
-///
-/// - `changed_by`: admin address that triggered the change.
-/// - `change_type`: human-readable label, e.g. "rate_changed", "paused".
-/// - `old_value`: previous numeric value; boolean states encode as 0/1.
-/// - `new_value`: new numeric value after the change.
-/// - `ledger`: ledger sequence at which the change was recorded.
-#[contracttype]
-#[derive(Clone, Debug, PartialEq)]
-pub struct ChangelogEntry {
-    pub changed_by: Address,
-    pub change_type: soroban_sdk::String,
-    pub old_value: i128,
-    pub new_value: i128,
-    pub ledger: u32,
-}
-
-// ── Issue #116: per-user vesting entries ─────────────────────────────────────
-
-/// One scheduled vesting entry for a user (issue #116).
-///
-/// - `amount`: token amount that vests at `vested_at_ledger`.
-/// - `vested_at_ledger`: ledger sequence after which the entry can be claimed.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]
 pub struct VestingEntry {
     pub amount: i128,
-    pub vested_at_ledger: u32,
+    pub claimable_at_ledger: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct EpochState {
+    pub epoch_number: u32,
+    pub started_at: u32,
+    pub reward_pool: i128,
+    pub total_staked_snapshot: i128,
 }

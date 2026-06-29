@@ -1,28 +1,27 @@
 use crate::storage::AdminAction;
 use soroban_sdk::{symbol_short, Address, Env};
 
-pub fn deposit(env: &Env, depositor: &Address, amount: i128, shares_minted: i128) {
+pub fn deposit(env: &Env, depositor: &Address, amount: i128, shares_minted: i128, ledger: u32) {
     let topics = (symbol_short!("deposit"), depositor);
-    env.events()
-        .publish(topics, (amount, shares_minted, env.ledger().sequence()));
+    env.events().publish(topics, (amount, shares_minted, ledger));
 }
 
-pub fn withdraw(env: &Env, withdrawer: &Address, shares_burned: i128, amount_returned: i128) {
+pub fn withdraw(env: &Env, withdrawer: &Address, shares_burned: i128, amount_returned: i128, ledger: u32) {
     let topics = (symbol_short!("withdraw"), withdrawer);
     env.events().publish(
         topics,
-        (shares_burned, amount_returned, env.ledger().sequence()),
+        (shares_burned, amount_returned, ledger),
     );
 }
 
-pub fn paused(env: &Env, admin: &Address) {
+pub fn paused(env: &Env, admin: &Address, ledger: u32) {
     let topics = (symbol_short!("paused"), admin);
-    env.events().publish(topics, (env.ledger().sequence(),));
+    env.events().publish(topics, (ledger,));
 }
 
-pub fn unpaused(env: &Env, admin: &Address) {
+pub fn unpaused(env: &Env, admin: &Address, ledger: u32) {
     let topics = (symbol_short!("unpaused"), admin);
-    env.events().publish(topics, (env.ledger().sequence(),));
+    env.events().publish(topics, (ledger,));
 }
 
 pub fn yield_added(env: &Env, admin: &Address, amount: i128) {
@@ -246,11 +245,25 @@ pub fn campaign_ended(env: &Env, admin: &Address) {
     env.events().publish(topics, (env.ledger().sequence(),));
 }
 
+/// Emitted when accrued rewards are automatically compounded back into stake.
+pub fn auto_restaked(env: &Env, user: &Address, amount: i128) {
+    let topics = (symbol_short!("auto_rst"), user);
+    env.events()
+        .publish(topics, (amount, env.ledger().sequence()));
+}
+
+/// Emitted when the contract automatically pauses because reward funding dropped too low.
+pub fn auto_paused(env: &Env, reward_balance: i128, threshold: i128) {
+    let topics = (symbol_short!("auto_ps"),);
+    env.events()
+        .publish(topics, (reward_balance, threshold, env.ledger().sequence()));
+}
+
 /// Emitted when a user claims staking rewards (via `claim` or `stake_and_claim`).
-pub fn claimed(env: &Env, user: &Address, reward: i128) {
+pub fn claimed(env: &Env, user: &Address, reward: i128, ledger: u32) {
     let topics = (symbol_short!("claimed"), user);
     env.events()
-        .publish(topics, (reward, env.ledger().sequence()));
+        .publish(topics, (reward, ledger));
 }
 
 /// Emitted by `initialize` so indexers can detect new pool deployments on-chain.
@@ -300,30 +313,55 @@ pub fn description_updated(env: &Env, admin: &Address, description: &soroban_sdk
         .publish(topics, (description.clone(), env.ledger().sequence()));
 }
 
-// ── Issue #129: auto-pause event ──────────────────────────────────────────────
-
-/// Emitted when the pool auto-pauses because reward balance fell below threshold.
-pub fn auto_paused(env: &Env, reward_balance: i128, threshold: i128) {
-    let topics = (symbol_short!("auto_paus"),);
+/// Emitted when a user merges their staking positions.
+pub fn positions_merged(env: &Env, user: &Address, count_merged: u32, total_amount: i128) {
+    let topics = (symbol_short!("merge"), user);
     env.events()
-        .publish(topics, (reward_balance, threshold, env.ledger().sequence()));
+        .publish(topics, (count_merged, total_amount, env.ledger().sequence()));
 }
 
-// ── Issue #130: KYC status changed event ──────────────────────────────────────
+// ── Issue #118: relayer approval events ───────────────────────────────────────
 
-/// Emitted for each address updated by bulk_set_kyc.
-#[allow(dead_code)]
-pub fn kyc_status_changed(env: &Env, user: &Address, approved: bool) {
-    let topics = (symbol_short!("kyc_chg"), user);
+/// Emitted when a user approves a relayer.
+pub fn relayer_approved(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_set"), user);
     env.events()
-        .publish(topics, (approved, env.ledger().sequence()));
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
 }
 
-// ── Issue #113: auto-restake event ────────────────────────────────────────────
+/// Emitted when a user revokes a relayer.
+pub fn relayer_revoked(env: &Env, user: &Address, relayer: &Address) {
+    let topics = (symbol_short!("rlyr_rev"), user);
+    env.events()
+        .publish(topics, (relayer.clone(), env.ledger().sequence()));
+}
 
-/// Emitted when rewards are automatically restaked into a user's position.
-pub fn auto_restaked(env: &Env, user: &Address, amount: i128) {
-    let topics = (symbol_short!("auto_rst"), user);
+/// Emitted when a relayer claims rewards on behalf of a user.
+pub fn claimed_on_behalf(env: &Env, relayer: &Address, user: &Address, reward: i128) {
+    let topics = (symbol_short!("claimed"), user);
+    env.events()
+        .publish(topics, (reward, relayer.clone(), env.ledger().sequence()));
+}
+
+// ── Issue #126: yield source events ───────────────────────────────────────────
+
+/// Emitted when a yield source notifies the contract of a new reward deposit.
+pub fn reward_added(env: &Env, source: &Address, amount: i128) {
+    let topics = (symbol_short!("rwd_add"), source);
     env.events()
         .publish(topics, (amount, env.ledger().sequence()));
+}
+
+/// Emitted when admin adds an address to the yield source whitelist.
+pub fn yield_source_added(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_add"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
+}
+
+/// Emitted when admin removes an address from the yield source whitelist.
+pub fn yield_source_removed(env: &Env, admin: &Address, source: &Address) {
+    let topics = (symbol_short!("ys_rem"), admin);
+    env.events()
+        .publish(topics, (source.clone(), env.ledger().sequence()));
 }

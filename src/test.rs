@@ -10,7 +10,7 @@ use soroban_sdk::{
 use crate::{
     errors::VaultError,
     nft::{StakeReceiptNFT, StakeReceiptNFTClient},
-    storage::{ChangelogEntry, LeaderboardEntry, UnstakeCheckResult},
+    storage::{ChangelogEntry, UnstakeCheckResult},
     vault::{
         VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_DESCRIPTION, CONTRACT_NAME,
         CONTRACT_VERSION, MAX_CHANGELOG_ENTRIES, STELLAR_LEDGERS_PER_YEAR,
@@ -190,6 +190,26 @@ fn test_first_deposit_mints_1to1_shares() {
     let (total_shares, total_deposited) = f.vault.vault_state();
     assert_eq!(total_shares, 500_000);
     assert_eq!(total_deposited, 500_000);
+}
+
+#[test]
+fn test_contract_balance_equals_staked_amount() {
+    let f = VaultFixture::new();
+    f.vault.deposit(&f.alice, &100_000);
+    assert_eq!(f.vault.contract_balance(), 100_000);
+}
+
+#[test]
+fn test_has_position_returns_false_for_no_position() {
+    let f = VaultFixture::new();
+    assert_eq!(f.vault.has_position(&f.bob), false);
+}
+
+#[test]
+fn test_has_position_returns_true_after_stake() {
+    let f = VaultFixture::new();
+    f.vault.deposit(&f.alice, &100_000);
+    assert_eq!(f.vault.has_position(&f.alice), true);
 }
 
 #[test]
@@ -516,6 +536,8 @@ fn test_deposit_emits_event() {
         Address::try_from_val(&f.env, &event.1.get(1).unwrap()).unwrap(),
         f.alice
     );
+    let data_vec = Vec::<soroban_sdk::Val>::try_from_val(&f.env, &event.2).unwrap();
+    let _ledger: u32 = u32::try_from_val(&f.env, &data_vec.get(2).unwrap()).unwrap();
 }
 
 #[test]
@@ -537,6 +559,8 @@ fn test_withdraw_emits_event() {
         Address::try_from_val(&f.env, &event.1.get(1).unwrap()).unwrap(),
         f.alice
     );
+    let data_vec = Vec::<soroban_sdk::Val>::try_from_val(&f.env, &event.2).unwrap();
+    let _ledger: u32 = u32::try_from_val(&f.env, &data_vec.get(2).unwrap()).unwrap();
 }
 
 #[test]
@@ -552,6 +576,8 @@ fn test_pause_emits_event() {
         .collect();
 
     assert_eq!(paused_events.len(), 1);
+    let data_vec = Vec::<soroban_sdk::Val>::try_from_val(&f.env, &paused_events[0].2).unwrap();
+    let _ledger: u32 = u32::try_from_val(&f.env, &data_vec.get(0).unwrap()).unwrap();
 }
 
 #[test]
@@ -568,6 +594,28 @@ fn test_unpause_emits_event() {
         .collect();
 
     assert_eq!(unpaused_events.len(), 1);
+    let data_vec = Vec::<soroban_sdk::Val>::try_from_val(&f.env, &unpaused_events[0].2).unwrap();
+    let _ledger: u32 = u32::try_from_val(&f.env, &data_vec.get(0).unwrap()).unwrap();
+}
+
+#[test]
+fn test_claim_emits_event() {
+    let f = VaultFixture::new();
+    setup_reward_pool(&f);
+
+    f.vault.stake(&f.alice, &1_000_000);
+    set_ledger(&f.env, STELLAR_LEDGERS_PER_YEAR);
+    f.vault.claim(&f.alice);
+
+    let events = f.env.events().all();
+    let claimed_events: std::vec::Vec<_> = events
+        .into_iter()
+        .filter(|(_, topics, _)| topic_matches(&f.env, topics, "claimed"))
+        .collect();
+
+    assert_eq!(claimed_events.len(), 1);
+    let data_vec = Vec::<soroban_sdk::Val>::try_from_val(&f.env, &claimed_events[0].2).unwrap();
+    let _ledger: u32 = u32::try_from_val(&f.env, &data_vec.get(1).unwrap()).unwrap();
 }
 
 #[test]
@@ -1941,6 +1989,14 @@ fn test_get_stake_token_before_init_fails() {
     let vault = VaultContractClient::new(&env, &vault_id);
     let result = vault.try_get_stake_token();
     assert_eq!(result, Err(Ok(VaultError::NotInitialized)));
+}
+
+#[test]
+fn test_get_reward_token_returns_set_token() {
+    let f = VaultFixture::new();
+    let reward_token_addr = f.env.register_stellar_asset_contract(f.admin.clone());
+    f.vault.set_reward_token(&reward_token_addr);
+    assert_eq!(f.vault.get_reward_token(), reward_token_addr);
 }
 
 // ── simulation functions (Issue #54) ────────────────────────────────────────
@@ -3403,6 +3459,7 @@ fn test_schedule_vesting_requires_admin() {
     let f = VaultFixture::new();
     f.vault.schedule_vesting(&f.alice, &1_000, &100);
     assert_eq!(f.env.auths()[0].0, f.admin);
+    assert_eq!(f.vault.vesting_balance(&f.alice).len(), 1);
 }
 
 // ── Issue #117: pool_uptime_ledgers ──────────────────────────────────────────
@@ -3580,4 +3637,223 @@ fn test_error_message_empty_string_allowed() {
 
     f.vault.set_error_message(&error_code, &empty_message);
     assert_eq!(f.vault.get_error_message(&error_code), Some(empty_message));
+// ── Issue #118: relayer approval ─────────────────────────────────────────────
+
+#[test]
+fn test_approve_relayer_stores_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert!(f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_approve_relayer_requires_user_auth() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert_eq!(f.env.auths()[0].0, f.alice);
+}
+
+#[test]
+fn test_revoke_relayer_removes_approval() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    f.vault.approve_relayer(&f.alice, &relayer);
+    assert!(f.vault.is_approved_relayer(&f.alice, &relayer));
+    f.vault.revoke_relayer(&f.alice, &relayer);
+    assert!(!f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_is_approved_relayer_false_for_unknown() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+    assert!(!f.vault.is_approved_relayer(&f.alice, &relayer));
+}
+
+#[test]
+fn test_claim_on_behalf_pays_user_not_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+
+    f.vault.set_reward_rate_bps(&500);
+    f.token_admin.mint(&f.alice, &10_000_000);
+    f.token_admin.mint(&f.admin, &50_000_000);
+    f.vault.fund_reward_pool(&f.admin, &50_000_000);
+    f.vault.stake(&f.alice, &10_000_000);
+    set_ledger(&f.env, 200_000);
+
+    f.vault.approve_relayer(&f.alice, &relayer);
+    let reward = f.vault.claim_on_behalf(&relayer, &f.alice);
+    assert!(reward > 0, "reward must be positive");
+    // relayer balance stays 0; only alice receives tokens
+    assert_eq!(f.token.balance(&relayer), 0);
+    assert!(f.token.balance(&f.alice) > 0);
+}
+
+#[test]
+fn test_claim_on_behalf_fails_for_unapproved_relayer() {
+    let f = VaultFixture::new();
+    let relayer = Address::generate(&f.env);
+
+    f.token_admin.mint(&f.alice, &10_000_000);
+    f.vault.stake(&f.alice, &10_000_000);
+
+    let result = f.vault.try_claim_on_behalf(&relayer, &f.alice);
+    assert!(result.is_err());
+}
+
+// ── Issue #124: reward rate history ──────────────────────────────────────────
+
+#[test]
+fn test_reward_rate_history_empty_initially() {
+    let f = VaultFixture::new();
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn test_reward_rate_history_records_each_change() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&100);
+    f.vault.set_reward_rate_bps(&200);
+    f.vault.set_reward_rate_bps(&300);
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 3);
+}
+
+#[test]
+fn test_reward_rate_history_entry_values() {
+    let f = VaultFixture::new();
+    f.vault.set_reward_rate_bps(&150);
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 1);
+    let entry = history.get(0).unwrap();
+    assert_eq!(entry.old_rate_bps, 0);
+    assert_eq!(entry.new_rate_bps, 150);
+}
+
+#[test]
+fn test_reward_rate_history_capped_at_20() {
+    let f = VaultFixture::new();
+    for i in 1u32..=25 {
+        f.vault.set_reward_rate_bps(&(i * 10));
+    }
+    let history = f.vault.get_reward_rate_history();
+    assert_eq!(history.len(), 20, "history must be capped at 20 entries");
+}
+
+// ── Issue #125: minimum_lock_remaining ───────────────────────────────────────
+
+#[test]
+fn test_minimum_lock_remaining_zero_when_no_lock() {
+    let f = VaultFixture::new();
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    // No lock period set — should return 0.
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 0);
+}
+
+#[test]
+fn test_minimum_lock_remaining_full_before_unlock() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&1_000);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    // Still at ledger 0 — 1000 ledgers remain.
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 1_000);
+}
+
+#[test]
+fn test_minimum_lock_remaining_decreases_over_time() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&1_000);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    set_ledger(&f.env, 400);
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 600);
+}
+
+#[test]
+fn test_minimum_lock_remaining_zero_after_lock_expires() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&500);
+    f.token_admin.mint(&f.alice, &1_000_000);
+    f.vault.stake(&f.alice, &1_000_000);
+    set_ledger(&f.env, 1_000);
+    assert_eq!(f.vault.minimum_lock_remaining(&f.alice), 0);
+}
+
+#[test]
+fn test_minimum_lock_remaining_fails_with_no_position() {
+    let f = VaultFixture::new();
+    f.vault.set_lock_period(&500);
+    let result = f.vault.try_minimum_lock_remaining(&f.alice);
+    assert!(result.is_err());
+}
+
+// ── Issue #126: yield source whitelist and notify_reward_added ───────────────
+
+#[test]
+fn test_add_yield_source_whitelists_address() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert!(f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_add_yield_source_requires_admin_auth() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert_eq!(f.env.auths()[0].0, f.admin);
+}
+
+#[test]
+fn test_remove_yield_source_revokes_whitelist() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    assert!(f.vault.is_yield_source(&source));
+    f.vault.remove_yield_source(&source);
+    assert!(!f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_is_yield_source_false_for_unknown() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    assert!(!f.vault.is_yield_source(&source));
+}
+
+#[test]
+fn test_notify_reward_added_increments_total() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+
+    assert_eq!(f.vault.get_total_rewards_added(), 0);
+    f.vault.notify_reward_added(&source, &5_000);
+    assert_eq!(f.vault.get_total_rewards_added(), 5_000);
+    f.vault.notify_reward_added(&source, &3_000);
+    assert_eq!(f.vault.get_total_rewards_added(), 8_000);
+}
+
+#[test]
+fn test_notify_reward_added_fails_for_non_source() {
+    let f = VaultFixture::new();
+    let non_source = Address::generate(&f.env);
+    let result = f.vault.try_notify_reward_added(&non_source, &1_000);
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_notify_reward_added_fails_for_zero_amount() {
+    let f = VaultFixture::new();
+    let source = Address::generate(&f.env);
+    f.vault.add_yield_source(&source);
+    let result = f.vault.try_notify_reward_added(&source, &0);
+    assert!(result.is_err());
 }
