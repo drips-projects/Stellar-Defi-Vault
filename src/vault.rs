@@ -78,6 +78,11 @@ impl VaultContract {
         admin::set_admin(&env, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Paused, &false);
+        // Store the original deployer address (write-once, never changes).
+        // Uses symbol_short! to avoid pushing DataKey over the contracttype variant limit.
+        env.storage()
+            .instance()
+            .set(&symbol_short!("deployer"), &admin);
         // By default, set the slash treasury to the admin address. Can be updated by admin later.
         balance::set_slash_treasury(&env, &admin);
         // Issue #117: record initialization ledger for pool_uptime_ledgers.
@@ -180,6 +185,21 @@ impl VaultContract {
     /// Read-only query for the current admin address.
     pub fn get_admin(env: Env) -> Result<Address, VaultError> {
         admin::get_admin(&env)
+    }
+
+    /// Read-only query for the original deployer address.
+    ///
+    /// Returns the address that called `initialize` when the pool was first
+    /// deployed. This value is write-once and never changes, even if the
+    /// admin is transferred via `transfer_admin`.
+    ///
+    /// Reverts with `NotInitialized` if the pool has not been initialized.
+    /// No auth required.
+    pub fn pool_created_by(env: Env) -> Result<Address, VaultError> {
+        env.storage()
+            .instance()
+            .get(&symbol_short!("deployer"))
+            .ok_or(VaultError::NotInitialized)
     }
 
     /// Read-only query for the deployed contract version.

@@ -151,6 +151,13 @@ fn test_get_admin_returns_initialized_admin() {
 }
 
 #[test]
+fn test_pool_created_by_returns_original_deployer() {
+    let f = VaultFixture::new();
+    // pool_created_by should return the admin address passed to initialize
+    assert_eq!(f.vault.pool_created_by(), f.admin);
+}
+
+#[test]
 fn test_get_version_returns_contract_version() {
     let f = VaultFixture::new();
     assert_eq!(
@@ -350,6 +357,20 @@ fn test_transfer_admin() {
     f.vault.transfer_admin(&f.bob);
     // Bob is now admin — he should be able to pause
     f.vault.pause();
+}
+
+#[test]
+fn test_pool_created_by_unchanged_after_admin_transfer() {
+    let f = VaultFixture::new();
+    // Deployer is initially the admin
+    assert_eq!(f.vault.pool_created_by(), f.admin);
+    
+    // Transfer admin to bob
+    f.vault.transfer_admin(&f.bob);
+    assert_eq!(f.vault.get_admin(), f.bob);
+    
+    // Deployer should still be the original admin, not bob
+    assert_eq!(f.vault.pool_created_by(), f.admin);
 }
 
 // ── yield accrual ────────────────────────────────────────────────────────────
@@ -714,6 +735,15 @@ fn test_get_withdrawal_limit_before_init_fails() {
     let vault_id = env.register_contract(None, VaultContract);
     let vault = VaultContractClient::new(&env, &vault_id);
     let result = vault.try_get_withdrawal_limit();
+    assert_eq!(result, Err(Ok(VaultError::NotInitialized)));
+}
+
+#[test]
+fn test_pool_created_by_before_init_fails() {
+    let env = Env::default();
+    let vault_id = env.register_contract(None, VaultContract);
+    let vault = VaultContractClient::new(&env, &vault_id);
+    let result = vault.try_pool_created_by();
     assert_eq!(result, Err(Ok(VaultError::NotInitialized)));
 }
 
