@@ -341,3 +341,11 @@ pub struct EpochState {
     pub reward_pool: i128,
     pub total_staked_snapshot: i128,
 }
+
+/// Governance checkpoint: total staked recorded at a specific ledger (issue snapshot_total_staked).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct TotalStakedSnapshot {
+    pub total_staked: i128,
+    pub ledger: u32,
+}

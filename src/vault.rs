@@ -8,8 +8,8 @@ use crate::{
     storage::{
         CampaignInfo, ChangelogEntry, ClaimWindow, ContractMetadata, DataKey, InterfaceId,
         LeaderboardEntry, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
-        StakeStreak, StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult, UserStats,
-        UserSummary, VestingEntry, EpochState,
+        StakeStreak, StakingEfficiencyScore, TotalStakedSnapshot, UnbondingPosition,
+        UnstakeCheckResult, UserStats, UserSummary, VestingEntry, EpochState,
     },
 };
 
@@ -4287,6 +4287,63 @@ impl VaultContract {
         events::positions_merged(&env, &user, 1, total_amount);
 
         Ok(())
+    }
+
+    // ── Governance checkpoints: snapshot_total_staked ─────────────────────────────
+
+    /// Admin: record the current total staked as a governance checkpoint.
+    ///
+    /// Appends a `TotalStakedSnapshot { total_staked, ledger }` to instance
+    /// storage.  The list is capped at 50 entries; if the cap is exceeded the
+    /// oldest entry is dropped.  Requires admin auth.
+    pub fn take_snapshot(env: Env) -> Result<(), VaultError> {
+        let admin = admin::get_admin(&env)?;
+        admin.require_auth();
+
+        let current_ledger = env.ledger().sequence();
+        let total_staked = balance::get_total_deposited(&env);
+
+        let mut snapshots = balance::get_staked_snapshots(&env);
+        snapshots.push_back(TotalStakedSnapshot {
+            total_staked,
+            ledger: current_ledger,
+        });
+
+        while snapshots.len() > balance::MAX_STAKED_SNAPSHOTS {
+            snapshots.pop_front();
+        }
+
+        balance::set_staked_snapshots(&env, &snapshots);
+        Ok(())
+    }
+
+    /// Read-only: returns the nearest snapshot at or before `ledger`.
+    ///
+    /// Scans from the end (most recent) towards the front and returns the first
+    /// entry whose `ledger` field is ≤ the requested ledger.  Returns `None`
+    /// if no snapshot has been taken yet or all recorded ledgers are after the
+    /// requested one.
+    pub fn get_snapshot_at(env: Env, ledger: u32) -> Option<TotalStakedSnapshot> {
+        let snapshots = balance::get_staked_snapshots(&env);
+        let len = snapshots.len();
+        if len == 0 {
+            return None;
+        }
+        // Iterate from newest to oldest
+        let mut i = len;
+        while i > 0 {
+            i -= 1;
+            let snap = snapshots.get(i).unwrap();
+            if snap.ledger <= ledger {
+                return Some(snap);
+            }
+        }
+        None
+    }
+
+    /// Read-only: returns the full snapshot history, oldest first.
+    pub fn get_all_snapshots(env: Env) -> Vec<TotalStakedSnapshot> {
+        balance::get_staked_snapshots(&env)
     }
 
 }
