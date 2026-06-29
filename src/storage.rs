@@ -235,6 +235,33 @@ pub struct ChangelogEntry {
     pub new_value: i128,
 }
 
+/// One entry in the rich reward-rate history exposed by `get_reward_rate_history` (issue #124).
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct RateHistoryEntry {
+    pub old_rate_bps: i128,
+    pub new_rate_bps: i128,
+    pub changed_at_ledger: u32,
+    pub changed_by: Address,
+}
+
+/// Accumulated referral stats stored per referrer.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferralStats {
+    pub total_referred_stake: i128,
+    pub referral_count: u32,
+}
+
+/// One entry in the referral leaderboard returned by `referral_leaderboard`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct ReferralLeaderboardEntry {
+    pub referrer: Address,
+    pub total_referred_stake: i128,
+    pub referral_count: u32,
+}
+
 /// Comprehensive health snapshot of the pool returned by `pool_health_report`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]

@@ -7,9 +7,10 @@ use crate::{
     nft::StakeReceiptNFTClient,
     storage::{
         CampaignInfo, ChangelogEntry, ClaimWindow, ContractMetadata, DataKey, InterfaceId,
-        LeaderboardEntry, PoolConfig, PoolHealthReport, PoolStats, StakeAction, StakeHistoryEntry,
-        StakePosition, StakeStreak, StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult,
-        UserStats, UserSummary, VestingEntry, EpochState,
+        LeaderboardEntry, PoolConfig, PoolHealthReport, PoolStats, RateHistoryEntry,
+        ReferralLeaderboardEntry, StakeAction, StakeHistoryEntry, StakePosition, StakeStreak,
+        StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult, UserStats, UserSummary,
+        VestingEntry, EpochState,
     },
 };
 
@@ -573,6 +574,14 @@ impl VaultContract {
         let amount_removed =
             balance::shares_to_amount(total_shares, total_deposited, shares_to_remove)
                 .ok_or(VaultError::ArithmeticError)?;
+
+        // Referral tracking: keep total_referred_stake in sync with actual stake.
+        if let Some(referrer) = balance::get_referrer_of(&env, &user) {
+            let mut stats = balance::get_referral_stats(&env, &referrer);
+            stats.total_referred_stake =
+                stats.total_referred_stake.saturating_sub(amount_removed);
+            balance::set_referral_stats(&env, &referrer, &stats);
+        }
 
         // update user shares and totals immediately; funds remain in contract until execute_unstake
         let new_user_shares = user_shares - shares_to_remove;
@@ -2357,6 +2366,14 @@ impl VaultContract {
 
         let amount = balance::shares_to_amount(total_shares, total_deposited, shares)
             .ok_or(VaultError::ArithmeticError)?;
+
+        // Referral tracking: decrease referrer's total_referred_stake by the
+        // gross unstaked amount so the leaderboard stays accurate.
+        if let Some(referrer) = balance::get_referrer_of(env, staker) {
+            let mut stats = balance::get_referral_stats(env, &referrer);
+            stats.total_referred_stake = stats.total_referred_stake.saturating_sub(amount);
+            balance::set_referral_stats(env, &referrer, &stats);
+        }
 
         let token_addr = Self::token_address(&env)?;
 
@@ -4254,6 +4271,119 @@ impl VaultContract {
             longest_streak: 0,
             last_active_wave: 0,
         })
+    }
+
+    // ── Referral system ───────────────────────────────────────────────────────
+
+    /// Stake `amount` tokens on behalf of `staker`, crediting `referrer` with
+    /// the stake in the referral leaderboard.
+    ///
+    /// The referral relationship is recorded the first time only (first referrer
+    /// wins; subsequent calls with a different `referrer` value are silently
+    /// ignored and the original referrer receives the credit). Self-referral is
+    /// rejected with `InvalidAddress`. Behaves identically to `stake` in every
+    /// other respect.
+    pub fn stake_with_referral(
+        env: Env,
+        staker: Address,
+        amount: i128,
+        referrer: Address,
+    ) -> Result<i128, VaultError> {
+        if staker == referrer {
+            return Err(VaultError::InvalidAddress);
+        }
+
+        let shares = Self::do_stake(&env, &staker, amount)?;
+
+        let is_new_referral = balance::get_referrer_of(&env, &staker).is_none();
+
+        let effective_referrer = if is_new_referral {
+            balance::set_referrer_of(&env, &staker, &referrer);
+            // Register referrer in the global registry if not already present.
+            let mut registry = balance::get_referral_registry(&env);
+            let mut already_in = false;
+            let mut i = 0u32;
+            while i < registry.len() {
+                if registry.get(i).unwrap() == referrer {
+                    already_in = true;
+                    break;
+                }
+                i += 1;
+            }
+            if !already_in {
+                registry.push_back(referrer.clone());
+                balance::set_referral_registry(&env, &registry);
+            }
+            referrer
+        } else {
+            balance::get_referrer_of(&env, &staker).unwrap()
+        };
+
+        let mut stats = balance::get_referral_stats(&env, &effective_referrer);
+        if is_new_referral {
+            stats.referral_count += 1;
+        }
+        stats.total_referred_stake = stats.total_referred_stake.saturating_add(amount);
+        balance::set_referral_stats(&env, &effective_referrer, &stats);
+
+        Ok(shares)
+    }
+
+    /// Returns the top 10 referrers sorted descending by `total_referred_stake`.
+    ///
+    /// Computed dynamically from the referral registry on every call — not
+    /// cached. `total_referred_stake` reflects the current live stake of all
+    /// users the referrer brought in (decreasing as they unstake). No auth
+    /// required.
+    pub fn referral_leaderboard(env: Env) -> Vec<ReferralLeaderboardEntry> {
+        const CAP: u32 = 10;
+        let registry = balance::get_referral_registry(&env);
+        let mut top: Vec<ReferralLeaderboardEntry> = Vec::new(&env);
+
+        let mut i = 0u32;
+        while i < registry.len() {
+            let referrer = registry.get(i).unwrap();
+            let stats = balance::get_referral_stats(&env, &referrer);
+            let stake = stats.total_referred_stake;
+
+            // Find insertion index in the descending-sorted top list.
+            let mut ins = top.len(); // default: append at end
+            let mut j = 0u32;
+            while j < top.len() {
+                if stake > top.get(j).unwrap().total_referred_stake {
+                    ins = j;
+                    break;
+                }
+                j += 1;
+            }
+
+            // Only include if the entry ranks within the top CAP.
+            if ins < CAP {
+                let entry = ReferralLeaderboardEntry {
+                    referrer,
+                    total_referred_stake: stake,
+                    referral_count: stats.referral_count,
+                };
+                // Rebuild the sorted vec with the new entry at `ins`.
+                let mut new_top: Vec<ReferralLeaderboardEntry> = Vec::new(&env);
+                let mut k = 0u32;
+                while k < ins {
+                    new_top.push_back(top.get(k).unwrap());
+                    k += 1;
+                }
+                new_top.push_back(entry);
+                k = ins;
+                while k < top.len() && new_top.len() < CAP {
+                    new_top.push_back(top.get(k).unwrap());
+                    k += 1;
+                }
+                top = new_top;
+            }
+
+            i += 1;
+        }
+
+        top
     }
 
     /// Return a comprehensive health snapshot of the pool in a single call.
