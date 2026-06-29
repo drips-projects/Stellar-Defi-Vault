@@ -259,9 +259,7 @@ pub fn get_nft_contract(env: &Env) -> Option<Address> {
 }
 
 pub fn set_nft_contract(env: &Env, nft: &Address) {
-    env.storage()
-        .instance()
-        .set(&symbol_short!("nft_con"), nft);
+    env.storage().instance().set(&symbol_short!("nft_con"), nft);
 }
 
 // ── Issue #41: restake grace window ──────────────────────────────────────────

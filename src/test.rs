@@ -364,11 +364,11 @@ fn test_pool_created_by_unchanged_after_admin_transfer() {
     let f = VaultFixture::new();
     // Deployer is initially the admin
     assert_eq!(f.vault.pool_created_by(), f.admin);
-    
+
     // Transfer admin to bob
     f.vault.transfer_admin(&f.bob);
     assert_eq!(f.vault.get_admin(), f.bob);
-    
+
     // Deployer should still be the original admin, not bob
     assert_eq!(f.vault.pool_created_by(), f.admin);
 }

@@ -1911,8 +1911,8 @@ impl VaultContract {
             .get::<_, u32>(&DataKey::StakedAtLedger(from.clone()))
             .unwrap_or(env.ledger().sequence());
         let last_claim = balance::get_last_claim_ledger(&env, &from);
-        let checkpoint = balance::get_reward_checkpoint_ledger(&env, &from)
-            .unwrap_or(env.ledger().sequence());
+        let checkpoint =
+            balance::get_reward_checkpoint_ledger(&env, &from).unwrap_or(env.ledger().sequence());
         let accrued = balance::get_accrued_reward(&env, &from);
         let pending_estimate = Self::pending_reward(&env, &from).unwrap_or(accrued);
 
@@ -2573,7 +2573,13 @@ impl VaultContract {
         let token_client = token::Client::new(env, &token_addr);
         token_client.transfer(&env.current_contract_address(), staker, &amount_returned);
 
-        events::withdraw(env, staker, shares, amount_returned, env.ledger().sequence());
+        events::withdraw(
+            env,
+            staker,
+            shares,
+            amount_returned,
+            env.ledger().sequence(),
+        );
         balance::set_last_updated_ledger(env, env.ledger().sequence()); // Issue #69
 
         // Issue #129: auto-pause if reward balance drops below threshold
@@ -3682,7 +3688,9 @@ impl VaultContract {
     pub fn set_vesting_period(env: Env, admin: Address, ledgers: u32) -> Result<(), VaultError> {
         admin::require_admin(&env)?;
         let _ = admin;
-        env.storage().instance().set(&DataKey::VestingPeriod, &ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::VestingPeriod, &ledgers);
         Ok(())
     }
 
@@ -3835,7 +3843,9 @@ impl VaultContract {
         }
 
         env.storage().instance().set(&DataKey::EpochMode, &true);
-        env.storage().instance().set(&DataKey::EpochLedgers, &epoch_ledgers);
+        env.storage()
+            .instance()
+            .set(&DataKey::EpochLedgers, &epoch_ledgers);
         env.storage()
             .instance()
             .set(&DataKey::EpochRewardPerEpoch, &reward_per_epoch);
@@ -3898,9 +3908,10 @@ impl VaultContract {
             0
         };
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::EpochRewardFactor(state.epoch_number), &reward_factor);
+        env.storage().persistent().set(
+            &DataKey::EpochRewardFactor(state.epoch_number),
+            &reward_factor,
+        );
 
         let all_stakers = balance::get_all_stakers(&env);
         let total_shares = balance::get_total_shares(&env);
@@ -3910,7 +3921,8 @@ impl VaultContract {
             let staker = all_stakers.get(i).unwrap();
             let shares = balance::get_shares(&env, &staker);
             if shares > 0 && total_shares > 0 {
-                let staker_staked = balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
+                let staker_staked =
+                    balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
                 env.storage().persistent().set(
                     &(soroban_sdk::Symbol::new(&env, "uep_snp"), staker, state.epoch_number),
                     &staker_staked,
@@ -4001,7 +4013,7 @@ impl VaultContract {
             .unwrap_or(0);
 
         if vesting_period > 0 {
-        let mut entries = balance::get_vesting_entries(&env, &user);
+            let mut entries = balance::get_vesting_entries(&env, &user);
             if entries.len() >= 10 {
                 return Err(VaultError::VestingQueueFull);
             }
@@ -4639,7 +4651,8 @@ impl VaultContract {
         // In the current scalar model, we consolidate the single position.
         let total_shares = balance::get_total_shares(&env);
         let total_deposited = balance::get_total_deposited(&env);
-        let total_amount = balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
+        let total_amount =
+            balance::shares_to_amount(total_shares, total_deposited, shares).unwrap_or(0);
 
         // Reset locking period by updating the staked_at sequence to current ledger sequence
         let current_ledger = env.ledger().sequence();
