@@ -7,9 +7,9 @@ use crate::{
     nft::StakeReceiptNFTClient,
     storage::{
         CampaignInfo, ChangelogEntry, ClaimWindow, ContractMetadata, DataKey, InterfaceId,
-        LeaderboardEntry, PoolConfig, PoolStats, StakeAction, StakeHistoryEntry, StakePosition,
-        StakeStreak, StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult, UserStats,
-        UserSummary, VestingEntry, EpochState,
+        LeaderboardEntry, PoolConfig, PoolHealthReport, PoolStats, StakeAction, StakeHistoryEntry,
+        StakePosition, StakeStreak, StakingEfficiencyScore, UnbondingPosition, UnstakeCheckResult,
+        UserStats, UserSummary, VestingEntry, EpochState,
     },
 };
 
@@ -4254,6 +4254,54 @@ impl VaultContract {
             longest_streak: 0,
             last_active_wave: 0,
         })
+    }
+
+    /// Return a comprehensive health snapshot of the pool in a single call.
+    ///
+    /// Aggregates solvency, activity, and configuration metrics from existing storage
+    /// keys without writing any new state. No auth required.
+    pub fn pool_health_report(env: Env) -> PoolHealthReport {
+        let reward_token_balance = balance::get_reward_pool_balance(&env);
+        let total_staked = balance::get_total_deposited(&env);
+        let total_stakers = balance::get_total_stakers(&env);
+        let total_rewards_paid = balance::get_total_rewards_paid(&env);
+        let reward_rate_bps = balance::get_reward_rate_bps(&env) as i128;
+        let is_paused = Self::paused(&env);
+        let is_stopped: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Stopped)
+            .unwrap_or(false);
+        let initialized_at =
+            balance::get_initialized_at_ledger(&env).unwrap_or(env.ledger().sequence());
+        let uptime_ledgers = env.ledger().sequence().saturating_sub(initialized_at);
+
+        // estimated_daily_obligations = total_staked * reward_rate_bps * LEDGERS_PER_DAY
+        //                               / (BPS_DENOMINATOR * LEDGERS_PER_YEAR)
+        let estimated_daily_obligations = total_staked
+            .checked_mul(reward_rate_bps)
+            .and_then(|v| v.checked_mul(LEDGERS_PER_DAY as i128))
+            .and_then(|v| v.checked_div(BOOST_BPS_BASE as i128))
+            .and_then(|v| v.checked_div(STELLAR_LEDGERS_PER_YEAR as i128))
+            .unwrap_or(0);
+
+        let is_solvent_7_days = estimated_daily_obligations
+            .checked_mul(7)
+            .map(|seven_days| reward_token_balance >= seven_days)
+            .unwrap_or(false);
+
+        PoolHealthReport {
+            reward_token_balance,
+            total_staked,
+            total_stakers,
+            total_rewards_paid,
+            reward_rate_bps,
+            is_paused,
+            is_stopped,
+            uptime_ledgers,
+            estimated_daily_obligations,
+            is_solvent_7_days,
+        }
     }
 
     /// Consolidate multiple staking positions into a single position.

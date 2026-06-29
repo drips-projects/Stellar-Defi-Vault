@@ -235,6 +235,22 @@ pub struct ChangelogEntry {
     pub new_value: i128,
 }
 
+/// Comprehensive health snapshot of the pool returned by `pool_health_report`.
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PoolHealthReport {
+    pub reward_token_balance: i128,
+    pub total_staked: i128,
+    pub total_stakers: u32,
+    pub total_rewards_paid: i128,
+    pub reward_rate_bps: i128,
+    pub is_paused: bool,
+    pub is_stopped: bool,
+    pub uptime_ledgers: u32,
+    pub estimated_daily_obligations: i128,
+    pub is_solvent_7_days: bool,
+}
+
 /// Aggregate score used by `staking_efficiency_score`.
 #[contracttype]
 #[derive(Clone, Debug, PartialEq)]

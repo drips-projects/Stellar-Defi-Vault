@@ -10,10 +10,10 @@ use soroban_sdk::{
 use crate::{
     errors::VaultError,
     nft::{StakeReceiptNFT, StakeReceiptNFTClient},
-    storage::{ChangelogEntry, UnstakeCheckResult},
+    storage::{ChangelogEntry, PoolHealthReport, UnstakeCheckResult},
     vault::{
         VaultContract, VaultContractClient, BOOST_BPS_BASE, CONTRACT_DESCRIPTION, CONTRACT_NAME,
-        CONTRACT_VERSION, MAX_CHANGELOG_ENTRIES, STELLAR_LEDGERS_PER_YEAR,
+        CONTRACT_VERSION, LEDGERS_PER_DAY, MAX_CHANGELOG_ENTRIES, STELLAR_LEDGERS_PER_YEAR,
     },
 };
 
@@ -3705,4 +3705,46 @@ fn test_notify_reward_added_fails_for_zero_amount() {
     f.vault.add_yield_source(&source);
     let result = f.vault.try_notify_reward_added(&source, &0);
     assert!(result.is_err());
+}
+
+// ── pool_health_report ────────────────────────────────────────────────────────
+
+#[test]
+fn test_pool_health_report() {
+    let f = VaultFixture::new();
+
+    let stake_amount: i128 = 10_000_000;
+    let reward_fund: i128 = 100_000_000;
+    let rate_bps: u32 = 500;
+
+    f.token_admin.mint(&f.admin, &reward_fund);
+    f.vault.set_reward_rate_bps(&rate_bps);
+    f.vault.fund_reward_pool(&f.admin, &reward_fund);
+    f.vault.stake(&f.alice, &stake_amount);
+
+    let report: PoolHealthReport = f.vault.pool_health_report();
+
+    assert_eq!(report.reward_token_balance, reward_fund);
+    assert_eq!(report.total_staked, stake_amount);
+    assert_eq!(report.total_stakers, 1);
+    assert_eq!(report.total_rewards_paid, 0);
+    assert_eq!(report.reward_rate_bps, rate_bps as i128);
+    assert!(!report.is_paused);
+    assert!(!report.is_stopped);
+
+    // estimated_daily_obligations = stake_amount * rate_bps * LEDGERS_PER_DAY
+    //                               / (BPS_DENOMINATOR * LEDGERS_PER_YEAR)
+    let expected_daily: i128 = stake_amount * rate_bps as i128
+        * LEDGERS_PER_DAY as i128
+        / (10_000 * STELLAR_LEDGERS_PER_YEAR as i128);
+    assert_eq!(report.estimated_daily_obligations, expected_daily);
+
+    // reward_fund >> 7 * expected_daily, so pool must be solvent for 7 days
+    assert!(report.is_solvent_7_days);
+
+    // Pause the pool and verify is_paused is reflected
+    f.vault.pause();
+    let paused_report: PoolHealthReport = f.vault.pool_health_report();
+    assert!(paused_report.is_paused);
+    assert!(!paused_report.is_stopped);
 }
